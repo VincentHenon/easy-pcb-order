@@ -13,14 +13,14 @@ import tempfile
 import zipfile
 import wx
 import pcbnew
-from .parts import PartsDialog, read_assignments, write_assignments
-from . import geometry
+from .parts import PART, PartsDialog, read_assignments, write_assignments
+from . import geometry, wizard
 
 EDGE = pcbnew.Edge_Cuts
 PRESETS = {
     'JLCPCB': {'bom': True, 'cpl': True},
     'PCBWay': {'bom': True, 'cpl': True},
-    'Generic Gerber': {'bom': False, 'cpl': False},
+    'Autre fabricant (Gerber + BOM + placement)': {'bom': True, 'cpl': True},
 }
 COPPER = ['F.Cu', 'In1.Cu', 'In2.Cu', 'In3.Cu', 'In4.Cu', 'In5.Cu', 'In6.Cu',
           'In7.Cu', 'In8.Cu', 'In9.Cu', 'In10.Cu', 'In11.Cu', 'In12.Cu',
@@ -69,18 +69,27 @@ def connected_contours(board):
 def owner(point,contours):
     return geometry.owner(point,contours)
 
-def item_owner(obj, contours):
-    p = bb_center(obj)
-    idx = owner(p, contours)
-    b = obj.GetBoundingBox()
-    # Items may extend beyond an outline (connectors, ref text); disallow crossing for copper and tracks only.
-    if isinstance(obj, pcbnew.PCB_TRACK) or isinstance(obj, pcbnew.ZONE):
-        for corner in [(b.GetLeft(),b.GetTop()), (b.GetRight(),b.GetTop()),
-                       (b.GetRight(),b.GetBottom()), (b.GetLeft(),b.GetBottom())]:
-            if not geometry.contains(corner,contours[idx]['poly']) or any(geometry.contains(corner,hole) for hole in contours[idx]['holes']):
-                raise ValueError('Piste ou zone traversant le contour près de %.2f, %.2f mm.' %
-                                 (pcbnew.ToMM(p[0]), pcbnew.ToMM(p[1])))
-    return idx
+def item_owner(obj,contours):
+    b=obj.GetBoundingBox()
+    center=bb_center(obj)
+    if isinstance(obj,pcbnew.PCB_TRACK):
+        points=[xy(obj.GetStart()),xy(obj.GetEnd())]
+        idx=owner(points[0],contours)
+        if any(owner(p,contours)!=idx for p in points[1:]):
+            raise ValueError('Piste traversant deux cartes ou une découpe.')
+        return idx
+    if isinstance(obj,pcbnew.ZONE):
+        x0,x1=b.GetLeft(),b.GetRight();y0,y1=b.GetTop(),b.GetBottom()
+        samples=[center]+[(x0+(x1-x0)*x,y0+(y1-y0)*y)
+                          for x,y in ((.25,.25),(.75,.25),(.25,.75),(.75,.75))]
+        matches=[]
+        for sample in samples:
+            try:matches.append(owner(sample,contours))
+            except ValueError:pass  # A large zone may surround a cutout.
+        if not matches or len(set(matches))!=1:
+            raise ValueError('Zone de cuivre impossible à attribuer à une seule carte.')
+        return matches[0]
+    return owner(center,contours)
 
 def slug(name):
     value = re.sub(r'[^a-zA-Z0-9_-]+', '-', name.strip()).strip('-_')
@@ -120,15 +129,30 @@ def export_assembly(board, path, preset, assignments):
                         '%.2f' % (fp.GetOrientationDegrees() % 360),
                         'Bottom' if fp.IsFlipped() else 'Top'))
     if preset == 'JLCPCB':
-        header = ['Designator','Footprint','Quantity','Value','LCSC Part #']
-        rows = [[r,foot,'1',value,num] for r,foot,value,num in bom]
+        header=['Designator','Footprint','Quantity','Value','LCSC Part #']
+        rows=[[r,foot,'1',value,num] for r,foot,value,num in bom]
+        pos_header=['Designator','Mid X','Mid Y','Rotation','Layer']
+    elif preset == 'PCBWay':
+        header=['Line#','Quantity Per Part Number','Reference Designator','Part Number',
+                'Part Description','Package','Type','Manufacturers Name',
+                'Manufacturers Part Number','Distributors Part Number']
+        by_ref={fp.GetReference():fp for fp in board.GetFootprints()}
+        rows=[]
+        for line,(ref,foot,value,num) in enumerate(bom,1):
+            fp=by_ref[ref]
+            f=fields(fp)
+            rows.append([line,1,ref,f.get('mpn','') or num,value,foot,
+                         'SMD' if fp.GetAttributes() & pcbnew.FP_SMD else 'THT',
+                         f.get('manufacturer',''),f.get('mpn',''),num])
+        pos_header=['RefDes','X (mm)','Y (mm)','Rotation','Side']
     else:
-        header = ['Designator','Footprint','Quantity','Value','Manufacturer Part Number']
-        rows = [[r,foot,'1',value,num] for r,foot,value,num in bom]
+        header=['Reference','Quantity','Value','Footprint','Supplier Part Number']
+        rows=[[r,1,value,foot,num] for r,foot,value,num in bom]
+        pos_header=['RefDes','X (mm)','Y (mm)','Rotation','Side']
     with (path/'bom.csv').open('w',newline='',encoding='utf-8-sig') as f:
         w=csv.writer(f); w.writerow(header); w.writerows(rows)
     with (path/'positions.csv').open('w',newline='',encoding='utf-8-sig') as f:
-        w=csv.writer(f); w.writerow(['Designator','Mid X','Mid Y','Rotation','Layer']); w.writerows(pos)
+        w=csv.writer(f); w.writerow(pos_header); w.writerows(pos)
     return len(bom), len(pos)
 
 def run_cli(args):
@@ -156,12 +180,16 @@ def output_one(source, target, contours, index, entry, preset, cli, assignments)
     active = int(entry['layers'])
     if active not in (2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32):
         raise ValueError('Nombre de couches invalide pour %s.' % entry['name'])
-    # Changing layer stacks is not safe through this API. Reject inconsistent requests.
+    # Layer usage was validated before modifying this temporary copy.
     configured = board.GetCopperLayerCount()
-    if active != configured:
-        raise ValueError('%s : %s couches demandées, mais le PCB source est configuré sur %s. La pile de couches doit être modifiée dans KiCad avant export.' % (entry['name'], active, configured))
+    if active > configured:
+        raise ValueError('%s : %s couches demandées mais %s dans le source.' % (entry['name'],active,configured))
+    if active < configured:
+        board.SetCopperLayerCount(active)
     if not pcbnew.SaveBoard(str(temp), board):
         raise RuntimeError('Échec de la sauvegarde du PCB temporaire : %s' % temp)
+    if pcbnew.LoadBoard(str(temp)).GetCopperLayerCount()!=active:
+        raise RuntimeError('La pile de couches de %s n’a pas été enregistrée correctement.' % entry['name'])
     layers = [l for l in COPPER+OTHER if board.IsLayerEnabled(board.GetLayerID(l))]
     gerbers = target / 'gerbers'
     gerbers.mkdir()
@@ -181,38 +209,33 @@ def output_one(source, target, contours, index, entry, preset, cli, assignments)
          'placed_smd_with_number':counts[1], 'source':str(source)},indent=2),encoding='utf-8')
     temp.unlink()
 
-class BoardDialog(wx.Dialog):
-    def __init__(self,parent,contours,board):
-        super().__init__(parent,title='easy-pcb-order — cartes à exporter',size=(700,440))
-        root=wx.BoxSizer(wx.VERTICAL)
-        root.Add(wx.StaticText(self,label='Chaque contour extérieur Edge.Cuts est une carte ; les contours intérieurs sont ses découpes.'),0,wx.ALL,10)
-        grid=wx.FlexGridSizer(len(contours)+1,4,7,9)
-        for title in ('Contour','Nom du design','Couches','Front panel'):
-            grid.Add(wx.StaticText(self,label=title))
-        self.rows=[]
-        n=board.GetCopperLayerCount()
-        for i,c in enumerate(contours):
-            size=(max(p[0] for p in c['poly'])-min(p[0] for p in c['poly']),max(p[1] for p in c['poly'])-min(p[1] for p in c['poly']))
-            grid.Add(wx.StaticText(self,label='%d — %.1f × %.1f mm' % (i+1,pcbnew.ToMM(size[0]),pcbnew.ToMM(size[1]))))
-            name=wx.TextCtrl(self,value='PCB_%d' % (i+1)); grid.Add(name,1,wx.EXPAND)
-            layers=wx.Choice(self,choices=[str(k) for k in range(2,33,2)]); layers.SetStringSelection(str(n)); grid.Add(layers)
-            panel=wx.CheckBox(self); grid.Add(panel)
-            self.rows.append((name,layers,panel))
-        grid.AddGrowableCol(1,1)
-        root.Add(grid,0,wx.EXPAND|wx.ALL,12)
-        line=wx.BoxSizer(wx.HORIZONTAL)
-        line.Add(wx.StaticText(self,label='Usine / preset :'),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,8)
-        self.preset=wx.Choice(self,choices=list(PRESETS)); self.preset.SetSelection(0); line.Add(self.preset)
-        root.Add(line,0,wx.ALL,12)
-        root.Add(wx.StaticText(self,label='Le fichier source est conservé. Les exports sont placés dans un dossier séparé.'),0,wx.ALL,10)
-        root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,10)
-        self.SetSizer(root)
-    def entries(self):
-        result=[{'name':a.GetValue().strip(),'layers':int(b.GetStringSelection()),'panel':c.GetValue()} for a,b,c in self.rows]
-        names=[slug(e['name']).lower() for e in result]
-        if len(set(names))!=len(names):
-            raise ValueError('Les noms des cartes doivent être distincts.')
-        return result
+def validate_design_layers(board,index,contours,target):
+    source=board.GetCopperLayerCount()
+    if target>source or target<2 or target%2:
+        raise ValueError('Le design %d demande %d couches mais le fichier source en a %d.' % (index+1,target,source))
+    if target==source:return
+    removed=['In%d.Cu' % n for n in range(target-1,source-1)]
+    for obj in list(board.GetTracks())+list(board.Zones())+list(board.GetDrawings()):
+        if obj.GetLayer()==EDGE:continue
+        try:
+            if item_owner(obj,contours)!=index:continue
+        except ValueError:
+            if isinstance(obj,(pcbnew.PCB_TRACK,pcbnew.ZONE)):
+                raise
+            continue
+        if isinstance(obj,pcbnew.PCB_VIA):
+            raise ValueError('Design %d : un via est présent. Vérifie-le manuellement avant de réduire les couches.' % (index+1))
+        if any(obj.IsOnLayer(board.GetLayerID(name)) for name in removed):
+            raise ValueError('Design %d : cuivre présent sur %s. Impossible de réduire à %d couches.' %
+                             (index+1,', '.join(removed),target))
+
+def find_cli():
+    found=shutil.which('kicad-cli')
+    if found:return found
+    for location in ('/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli',
+                     '/Applications/KiCad/kicad-cli'):
+        if Path(location).is_file():return location
+    raise ValueError('kicad-cli introuvable. Ajoute le dossier bin de KiCad au PATH.')
 
 class MultiPCBExporter(pcbnew.ActionPlugin):
     def defaults(self):
@@ -229,29 +252,48 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
             # Read the saved file: avoid silently exporting stale content.
             if hasattr(current, 'IsModified') and current.IsModified():
                 raise ValueError('Enregistre le PCB dans KiCad avant l’export.')
+            mode=wizard.project_mode()
+            if mode is None:return
             board=pcbnew.LoadBoard(str(source))
             contours=connected_contours(board)
-            with BoardDialog(None,contours,board) as dialog:
-                if dialog.ShowModal()!=wx.ID_OK:
-                    return
-                entries=dialog.entries()
-                preset=dialog.preset.GetStringSelection()
+            if not wizard.verify_detection(contours,board,mode):return
+            with wizard.LayerDialog(contours,board.GetCopperLayerCount()) as dialog:
+                if dialog.ShowModal()!=wx.ID_OK:return
+                layer_settings=dialog.values()
+            for i,(layers,_) in enumerate(layer_settings):
+                validate_design_layers(board,i,contours,layers)
+            with wizard.NameDialog(contours) as dialog:
+                if dialog.ShowModal()!=wx.ID_OK:return
+                names=dialog.values()
+            if len(set(slug(name).lower() for name in names))!=len(names):
+                raise ValueError('Les noms des designs doivent être distincts.')
+            entries=[{'name':name,'layers':layers,'panel':panel}
+                     for name,(layers,panel) in zip(names,layer_settings)]
             assignments=read_assignments(source)
-            footprints=[fp for fp in board.GetFootprints() if not exclude(fp) and owner(bb_center(fp),contours) < len(contours) and not entries[owner(bb_center(fp),contours)]['panel']]
-            if PRESETS[preset]['bom'] and footprints:
-                for fp in footprints:
+            eligible=[fp for fp in current.GetFootprints() if not exclude(fp)
+                      and not entries[owner(bb_center(fp),contours)]['panel']]
+            eligible.sort(key=lambda fp:fp.GetReference())
+            for fp in eligible:
+                if PART.fullmatch(part_number(fp)):
                     assignments.setdefault(fp.GetReference(),part_number(fp))
-                with PartsDialog(None,footprints,assignments) as part_dialog:
-                    if part_dialog.ShowModal()!=wx.ID_OK: return
-                    assignments=part_dialog.mapping
-            cli=shutil.which('kicad-cli')
-            if not cli:
-                raise ValueError('kicad-cli introuvable. Ajoute le dossier bin de KiCad au PATH.')
+            missing=[fp for fp in eligible if fp.GetReference() not in assignments]
+            if missing:
+                with PartsDialog(None,missing,assignments) as dialog:
+                    try:
+                        if dialog.ShowModal()!=wx.ID_OK:return
+                        assignments=dialog.mapping
+                    finally:
+                        dialog.clear_highlight()
+            if not missing:
+                wx.MessageBox('Tous les composants à assembler ont déjà une référence LCSC enregistrée.','Étape 5 / 6 — composants',wx.OK|wx.ICON_INFORMATION)
+            preset=wizard.factory_choice()
+            if preset is None:return
+            cli=find_cli()
             base=source.parent / (source.stem+'-fabrication')
             if base.exists():
                 raise ValueError('Le dossier de sortie existe déjà : %s. Déplace-le ou renomme-le avant un nouvel export.' % base)
             # Stage everything to avoid partially published results.
-            with tempfile.TemporaryDirectory(prefix='multipcb-') as tmp:
+            with tempfile.TemporaryDirectory(prefix='easy-pcb-order-') as tmp:
                 stage=Path(tmp)/base.name
                 for i,entry in enumerate(entries):
                     output_one(source,stage/slug(entry['name']),contours,i,entry,preset,cli,assignments)
