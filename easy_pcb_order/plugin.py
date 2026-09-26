@@ -157,12 +157,12 @@ def output_one(source, target, contours, index, entry, preset, cli, assignments)
     if active not in (2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32):
         raise ValueError('Nombre de couches invalide pour %s.' % entry['name'])
     # Changing layer stacks is not safe through this API. Reject inconsistent requests.
-    configured = len([l for l in COPPER if board.IsLayerEnabled(pcbnew.LayerNameToId(l))])
+    configured = board.GetCopperLayerCount()
     if active != configured:
         raise ValueError('%s : %s couches demandées, mais le PCB source est configuré sur %s. La pile de couches doit être modifiée dans KiCad avant export.' % (entry['name'], active, configured))
     if not pcbnew.SaveBoard(str(temp), board):
         raise RuntimeError('Échec de la sauvegarde du PCB temporaire : %s' % temp)
-    layers = [l for l in COPPER+OTHER if board.IsLayerEnabled(pcbnew.LayerNameToId(l))]
+    layers = [l for l in COPPER+OTHER if board.IsLayerEnabled(board.GetLayerID(l))]
     gerbers = target / 'gerbers'
     gerbers.mkdir()
     run_cli([cli,'pcb','export','gerbers','-l',','.join(layers),'-o',str(gerbers),str(temp)])
@@ -190,7 +190,7 @@ class BoardDialog(wx.Dialog):
         for title in ('Contour','Nom du design','Couches','Front panel'):
             grid.Add(wx.StaticText(self,label=title))
         self.rows=[]
-        n=len([l for l in COPPER if board.IsLayerEnabled(pcbnew.LayerNameToId(l))])
+        n=board.GetCopperLayerCount()
         for i,c in enumerate(contours):
             size=(max(p[0] for p in c['poly'])-min(p[0] for p in c['poly']),max(p[1] for p in c['poly'])-min(p[1] for p in c['poly']))
             grid.Add(wx.StaticText(self,label='%d — %.1f × %.1f mm' % (i+1,pcbnew.ToMM(size[0]),pcbnew.ToMM(size[1]))))
