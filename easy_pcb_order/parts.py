@@ -1,5 +1,6 @@
 """Official LCSC partner search and user-reviewed part assignments."""
 import hashlib
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,19 @@ def write_assignments(source, mapping):
     path=Path(str(source)+'.parts.json')
     tmp=path.with_suffix(path.suffix+'.tmp')
     tmp.write_text(json.dumps(mapping,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+    tmp.replace(path)
+
+def read_stock_notes(source):
+    path=Path(str(source)+'.stock.json')
+    if not path.exists():return {}
+    data=json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(data,dict):raise ValueError('Fichier de relevés de stock invalide : %s' % path)
+    return data
+
+def write_stock_notes(source, notes):
+    path=Path(str(source)+'.stock.json')
+    tmp=path.with_suffix(path.suffix+'.tmp')
+    tmp.write_text(json.dumps(notes,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
     tmp.replace(path)
 
 class PartsDialog(wx.Dialog):
@@ -205,25 +219,30 @@ class PartsDialog(wx.Dialog):
 
 class ReviewDialog(wx.Dialog):
     """Review every reference independently, including exceptions within a group."""
-    def __init__(self,parent,groups,mapping):
-        super().__init__(parent,title='Vérification des références avant export',size=(850,600))
+    def __init__(self,parent,groups,mapping,stock_notes=None):
+        super().__init__(parent,title='Vérification des références avant export',size=(1100,600))
         self.mapping=dict(mapping)
+        self.stock_notes=dict(stock_notes or {})
         self.fps=[fp for group in groups for fp in group]
         root=wx.BoxSizer(wx.VERTICAL)
-        root.Add(wx.StaticText(self,label='Double-clique sur une ligne pour corriger son numéro LCSC ou exclure uniquement ce composant.'),0,wx.ALL,10)
+        root.Add(wx.StaticText(self,label='Double-clique pour corriger une pièce. Stock : relevé manuel daté, jamais une disponibilité en direct.'),0,wx.ALL,10)
         self.rows=wx.ListCtrl(self,style=wx.LC_REPORT|wx.LC_SINGLE_SEL)
-        for idx,(title,width) in enumerate((('Référence',100),('Valeur',180),('Empreinte',260),('Numéro LCSC / exclu',180))):
+        for idx,(title,width) in enumerate((('Référence',90),('Valeur',150),('Empreinte',220),('Numéro LCSC / exclu',170),('Stock (source et date)',350))):
             self.rows.InsertColumn(idx,title,width=width)
         for fp in self.fps:
             row=self.rows.InsertItem(self.rows.GetItemCount(),fp.GetReference())
             self.rows.SetItem(row,1,fp.GetValue())
             self.rows.SetItem(row,2,str(fp.GetFPID().GetLibItemName()))
             self.rows.SetItem(row,3,self.mapping.get(fp.GetReference()) or 'Exclu')
+            self.update_stock_cell(row)
         self.rows.Bind(wx.EVT_LIST_ITEM_ACTIVATED,self.edit)
         root.Add(self.rows,1,wx.EXPAND|wx.LEFT|wx.RIGHT,10)
         edit=wx.Button(self,label='Modifier la ligne sélectionnée')
         edit.Bind(wx.EVT_BUTTON,self.edit)
         root.Add(edit,0,wx.ALL,10)
+        stock=wx.Button(self,label='Consulter / renseigner le stock de la pièce sélectionnée')
+        stock.Bind(wx.EVT_BUTTON,self.edit_stock)
+        root.Add(stock,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,10)
         root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,10)
         self.SetSizer(root)
     def edit(self,event):
@@ -239,3 +258,37 @@ class ReviewDialog(wx.Dialog):
             return
         self.mapping[ref]=value
         self.rows.SetItem(idx,3,value or 'Exclu')
+        self.update_stock_cell(idx)
+    def update_stock_cell(self,idx):
+        ref=self.fps[idx].GetReference()
+        number=self.mapping.get(ref,'')
+        note=self.stock_notes.get(number,{}) if number else {}
+        if note and isinstance(note,dict):
+            label='%s — %s, relevé %s' % (note.get('quantity','?'),note.get('source','?'),note.get('checked_at','?'))
+        else:label='Non vérifié' if number else 'Sans assemblage'
+        self.rows.SetItem(idx,4,label)
+    def edit_stock(self,event):
+        idx=self.rows.GetFirstSelected()
+        if idx<0:return
+        number=self.mapping.get(self.fps[idx].GetReference(),'')
+        if not number:
+            wx.MessageBox('Attribue d’abord un numéro de pièce.','Stock',wx.OK|wx.ICON_INFORMATION)
+            return
+        with wx.SingleChoiceDialog(self,'Ouvre le catalogue officiel et vérifie la quantité pour '+number+'.',
+                                   'Source du relevé',['JLCPCB (stock assemblage)','LCSC (stock distributeur)']) as dlg:
+            if dlg.ShowModal()!=wx.ID_OK:return
+            source='JLCPCB' if dlg.GetSelection()==0 else 'LCSC'
+        url=('https://jlcpcb.com/parts?searchTxt=' if source=='JLCPCB' else 'https://www.lcsc.com/search?q=')+urllib.parse.quote(number)
+        webbrowser.open(url)
+        with wx.TextEntryDialog(self,'Quantité affichée pour '+number+' sur '+source+' (nombre entier).\nLaisse vide pour supprimer le relevé.',
+                                'Relever le stock',str(self.stock_notes.get(number,{}).get('quantity',''))) as dlg:
+            if dlg.ShowModal()!=wx.ID_OK:return
+            quantity=dlg.GetValue().strip()
+        if quantity and (not quantity.isascii() or not quantity.isdecimal()):
+            wx.MessageBox('Entre une quantité entière positive ou zéro.','Stock invalide',wx.OK|wx.ICON_WARNING)
+            return
+        if quantity:
+            self.stock_notes[number]={'quantity':int(quantity),'source':source,
+                                      'checked_at':datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z')}
+        else:self.stock_notes.pop(number,None)
+        for row in range(len(self.fps)):self.update_stock_cell(row)
