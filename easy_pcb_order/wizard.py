@@ -1,15 +1,104 @@
-"""Small, explicit fabrication workflow dialogs for the KiCad PCB editor."""
+"""Visual, guided fabrication workflow for KiCad PCB Editor."""
 import wx
 import pcbnew
 from . import geometry
 
 FACTORIES=['JLCPCB','PCBWay','Autre fabricant (Gerber + BOM + placement)']
 
+def components_for(board,contour):
+    result=[]
+    for fp in board.GetFootprints():
+        box=fp.GetBoundingBox()
+        point=((box.GetLeft()+box.GetRight())/2,(box.GetTop()+box.GetBottom())/2)
+        if geometry.contains(point,contour['poly']) and not any(geometry.contains(point,h) for h in contour['holes']):
+            result.append(fp)
+    return result
+
+class DesignPreview(wx.Panel):
+    """Simple 2D preview from KiCad geometry; no temporary Gerber required."""
+    def __init__(self,parent,contour,board,width=330,height=220):
+        super().__init__(parent,size=(width,height))
+        self.contour=contour
+        self.footprints=components_for(board,contour)
+        self.tracks=[]
+        for track in board.GetTracks():
+            if isinstance(track,pcbnew.PCB_VIA):continue
+            try:
+                if geometry.owner((track.GetStart().x,track.GetStart().y),[contour])==0:
+                    self.tracks.append(track)
+            except ValueError:pass
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_PAINT,self.paint)
+    def paint(self,event):
+        dc=wx.AutoBufferedPaintDC(self)
+        dc.SetBackground(wx.Brush(wx.Colour(247,248,250)))
+        dc.Clear()
+        outer=self.contour['poly']
+        xs=[p[0] for p in outer];ys=[p[1] for p in outer]
+        left,right=min(xs),max(xs);top,bottom=min(ys),max(ys)
+        w,h=self.GetClientSize()
+        scale=min((w-36)/max(1,right-left),(h-36)/max(1,bottom-top))
+        ox=(w-(right-left)*scale)/2;oy=(h-(bottom-top)*scale)/2
+        def point(p):return wx.Point(int(ox+(p[0]-left)*scale),int(oy+(p[1]-top)*scale))
+        dc.SetPen(wx.Pen(wx.Colour(42,83,132),2))
+        dc.SetBrush(wx.Brush(wx.Colour(214,232,245)))
+        dc.DrawPolygon([point(p) for p in outer])
+        dc.SetPen(wx.Pen(wx.Colour(175,73,73),2))
+        dc.SetBrush(wx.Brush(wx.Colour(247,248,250)))
+        for hole in self.contour['holes']:
+            dc.DrawPolygon([point(p) for p in hole])
+        dc.SetPen(wx.Pen(wx.Colour(51,151,106),1))
+        for track in self.tracks:
+            a=point((track.GetStart().x,track.GetStart().y))
+            b=point((track.GetEnd().x,track.GetEnd().y))
+            dc.DrawLine(a.x,a.y,b.x,b.y)
+        dc.SetPen(wx.Pen(wx.Colour(127,92,20),1))
+        dc.SetBrush(wx.Brush(wx.Colour(251,197,80)))
+        for fp in self.footprints:
+            p=point((fp.GetPosition().x,fp.GetPosition().y))
+            dc.DrawCircle(p.x,p.y,3)
+            dc.DrawText(fp.GetReference(),p.x+5,p.y-8)
+
+def card_caption(index,contour,board):
+    xs=[p[0] for p in contour['poly']];ys=[p[1] for p in contour['poly']]
+    refs=[fp.GetReference() for fp in components_for(board,contour)]
+    return 'Design %d • %.1f × %.1f mm • %d découpe(s) • %d empreinte(s)\n%s' % (
+        index+1,pcbnew.ToMM(max(xs)-min(xs)),pcbnew.ToMM(max(ys)-min(ys)),
+        len(contour['holes']),len(refs),', '.join(refs[:10]) or 'Aucune empreinte')
+
+def preview_card(parent,index,contour,board,controls=None):
+    box=wx.BoxSizer(wx.VERTICAL)
+    box.Add(wx.StaticText(parent,label=card_caption(index,contour,board)),0,wx.BOTTOM,5)
+    box.Add(DesignPreview(parent,contour,board),0,wx.BOTTOM,6)
+    if controls:box.Add(controls,0,wx.EXPAND)
+    return box
+
 def project_mode():
     with wx.SingleChoiceDialog(None,'Combien de designs PCB distincts contient ce fichier ?',
                                'Étape 1 / 6 — Projet',['Un seul design','Plusieurs designs']) as dlg:
         if dlg.ShowModal()!=wx.ID_OK:return None
         return 1 if dlg.GetSelection()==0 else 2
+
+class DetectionDialog(wx.Dialog):
+    def __init__(self,contours,board):
+        super().__init__(None,title='Étape 2 / 6 — aperçu des designs détectés',size=(790,640))
+        root=wx.BoxSizer(wx.VERTICAL)
+        root.Add(wx.StaticText(self,label='Vérifie les contours, trous, pistes et composants. Chaque vignette représente un fichier à fabriquer.'),0,wx.ALL,10)
+        scroll=wx.ScrolledWindow(self,style=wx.VSCROLL)
+        grid=wx.GridSizer(0,2,12,12)
+        self.confirmations=[]
+        for i,c in enumerate(contours):
+            card=wx.Panel(scroll)
+            check=wx.CheckBox(card,label='Ce design est bien détecté')
+            card.SetSizer(preview_card(card,i,c,board,check))
+            grid.Add(card,0,wx.EXPAND|wx.ALL,5)
+            self.confirmations.append(check)
+        scroll.SetSizer(grid);scroll.SetScrollRate(0,15)
+        root.Add(scroll,1,wx.EXPAND|wx.ALL,10)
+        root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,10)
+        self.SetSizer(root)
+    def all_confirmed(self):
+        return all(check.GetValue() for check in self.confirmations)
 
 def verify_detection(contours,board,mode):
     count=len(contours)
@@ -18,60 +107,58 @@ def verify_detection(contours,board,mode):
                       ('un seul design' if mode==1 else 'plusieurs designs',count),
                       'Étape 2 / 6 — détection incohérente',wx.OK|wx.ICON_WARNING)
         return False
-    lines=[]
-    for i,c in enumerate(contours):
-        xs=[p[0] for p in c['poly']];ys=[p[1] for p in c['poly']]
-        refs=[fp.GetReference() for fp in board.GetFootprints()
-              if geometry.contains(((fp.GetBoundingBox().GetLeft()+fp.GetBoundingBox().GetRight())/2,
-                                    (fp.GetBoundingBox().GetTop()+fp.GetBoundingBox().GetBottom())/2),c['poly'])]
-        lines.append('%d. %.1f × %.1f mm • %d découpe(s) • %d empreinte(s) : %s' %
-                     (i+1,pcbnew.ToMM(max(xs)-min(xs)),pcbnew.ToMM(max(ys)-min(ys)),
-                      len(c['holes']),len(refs),', '.join(refs[:6]) or 'aucune'))
-    message='%d design(s) détecté(s) (ordre de gauche à droite) :\n\n%s\n\nTous tes designs sont-ils présents ?' % (count,'\n'.join(lines))
-    with wx.MessageDialog(None,message,'Étape 2 / 6 — vérifier les designs',wx.YES_NO|wx.ICON_QUESTION) as dlg:
-        return dlg.ShowModal()==wx.ID_YES
+    with DetectionDialog(contours,board) as dlg:
+        if dlg.ShowModal()!=wx.ID_OK:return False
+        if dlg.all_confirmed():return True
+    wx.MessageBox('Confirme chaque vignette avant de continuer.','Étape 2 / 6',wx.OK|wx.ICON_WARNING)
+    return False
 
 class LayerDialog(wx.Dialog):
-    def __init__(self,contours,source_count):
-        super().__init__(None,title='Étape 3 / 6 — couches de chaque design',size=(590,330))
+    def __init__(self,contours,board):
+        source_count=board.GetCopperLayerCount()
+        super().__init__(None,title='Étape 3 / 6 — couches de chaque design',size=(790,640))
         root=wx.BoxSizer(wx.VERTICAL)
-        root.Add(wx.StaticText(self,label='Sélectionne les couches de chaque PCB. La pile source a %d couches.' % source_count),0,wx.ALL,12)
-        grid=wx.FlexGridSizer(len(contours)+1,3,9,12)
-        for h in ('Design','Couches cuivre','Front panel (sans assemblage)'):
-            grid.Add(wx.StaticText(self,label=h))
+        root.Add(wx.StaticText(self,label='Pile source : %d couches. Choisis les couches de chaque carte à côté de son aperçu.' % source_count),0,wx.ALL,10)
+        scroll=wx.ScrolledWindow(self,style=wx.VSCROLL)
+        grid=wx.GridSizer(0,2,12,12)
         self.rows=[]
         for i,c in enumerate(contours):
-            xs=[p[0] for p in c['poly']];ys=[p[1] for p in c['poly']]
-            grid.Add(wx.StaticText(self,label='%d — %.1f × %.1f mm' %
-                    (i+1,pcbnew.ToMM(max(xs)-min(xs)),pcbnew.ToMM(max(ys)-min(ys)))))
-            choice=wx.Choice(self,choices=[str(n) for n in range(2,source_count+1,2)])
-            choice.SetStringSelection(str(source_count));grid.Add(choice)
-            panel=wx.CheckBox(self);grid.Add(panel)
+            card=wx.Panel(scroll)
+            controls=wx.BoxSizer(wx.VERTICAL)
+            row=wx.BoxSizer(wx.HORIZONTAL)
+            row.Add(wx.StaticText(card,label='Couches cuivre :'),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,8)
+            choice=wx.Choice(card,choices=[str(n) for n in range(2,source_count+1,2)])
+            choice.SetStringSelection(str(source_count));row.Add(choice)
+            controls.Add(row,0,wx.BOTTOM,6)
+            panel=wx.CheckBox(card,label='Front panel (pas d’assemblage)')
+            controls.Add(panel)
+            card.SetSizer(preview_card(card,i,c,board,controls))
+            grid.Add(card,0,wx.EXPAND|wx.ALL,5)
             self.rows.append((choice,panel))
-        root.Add(grid,0,wx.ALL,12)
-        root.Add(wx.StaticText(self,label='Les couches internes utilisées par un design ne peuvent pas être supprimées. Le plugin vérifie cela avant export.'),0,wx.ALL,12)
+        scroll.SetSizer(grid);scroll.SetScrollRate(0,15)
+        root.Add(scroll,1,wx.EXPAND|wx.ALL,10)
         root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,10)
         self.SetSizer(root)
-    def values(self):
-        return [(int(choice.GetStringSelection()),panel.GetValue()) for choice,panel in self.rows]
+    def values(self):return [(int(choice.GetStringSelection()),panel.GetValue()) for choice,panel in self.rows]
 
 class NameDialog(wx.Dialog):
-    def __init__(self,contours):
-        super().__init__(None,title='Étape 4 / 6 — nommer les designs',size=(530,290))
+    def __init__(self,contours,board):
+        super().__init__(None,title='Étape 4 / 6 — nommer les designs',size=(790,640))
         root=wx.BoxSizer(wx.VERTICAL)
-        root.Add(wx.StaticText(self,label='Donne un nom distinct à chaque design :'),0,wx.ALL,12)
+        scroll=wx.ScrolledWindow(self,style=wx.VSCROLL)
+        grid=wx.GridSizer(0,2,12,12)
         self.names=[]
-        for i in range(len(contours)):
-            row=wx.BoxSizer(wx.HORIZONTAL)
-            row.Add(wx.StaticText(self,label='Design %d :' % (i+1)),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,12)
-            ctrl=wx.TextCtrl(self,value='PCB_%d' % (i+1))
-            row.Add(ctrl,1,wx.EXPAND)
-            root.Add(row,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,12)
-            self.names.append(ctrl)
+        for i,c in enumerate(contours):
+            card=wx.Panel(scroll)
+            field=wx.TextCtrl(card,value='PCB_%d' % (i+1))
+            card.SetSizer(preview_card(card,i,c,board,field))
+            grid.Add(card,0,wx.EXPAND|wx.ALL,5)
+            self.names.append(field)
+        scroll.SetSizer(grid);scroll.SetScrollRate(0,15)
+        root.Add(scroll,1,wx.EXPAND|wx.ALL,10)
         root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,10)
         self.SetSizer(root)
-    def values(self):
-        return [ctrl.GetValue().strip() for ctrl in self.names]
+    def values(self):return [ctrl.GetValue().strip() for ctrl in self.names]
 
 def factory_choice():
     with wx.SingleChoiceDialog(None,'Choisis le fabricant et le format des fichiers :',
