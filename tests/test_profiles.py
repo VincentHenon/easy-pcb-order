@@ -28,6 +28,8 @@ def load_plugin():
     parts=types.ModuleType('easy_pcb_order.parts')
     parts.PART=re.compile(r'^C[1-9][0-9]*$',re.I)
     parts.PartsDialog=object
+    parts.ReviewDialog=object
+    parts.part_key=lambda fp:(fp.GetReference()[0],fp.GetValue(),fp.GetFPID().GetLibItemName(),fp.GetAttributes())
     parts.read_assignments=lambda x:{}
     parts.write_assignments=lambda x,y:None
     wizard=types.ModuleType('easy_pcb_order.wizard')
