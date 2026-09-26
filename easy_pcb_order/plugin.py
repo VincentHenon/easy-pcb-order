@@ -285,7 +285,7 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                         assignments=dialog.mapping
                     finally:
                         dialog.clear_highlight()
-                        dialog.preview_dir.cleanup()
+                        dialog.stop_preview()
             if eligible:
                 with ReviewDialog(None,[[fp] for fp in eligible],assignments,read_stock_notes(source)) as dialog:
                     if dialog.ShowModal()!=wx.ID_OK:return
