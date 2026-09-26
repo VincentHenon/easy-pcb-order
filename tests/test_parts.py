@@ -27,6 +27,10 @@ class GroupTests(unittest.TestCase):
             fps=[Footprint('R1','10 kΩ','R_0603'),Footprint('R2','10kΩ','R_0603'),
                  Footprint('R3','1k','R_0603'),Footprint('C1','10kΩ','R_0603')]
             groups=module.group_footprints(fps,{'R1':'C100','R2':'C200'})
+            merged,completed=module.apply_imported_groups(fps,{'R2':'C200'},{'R1':'C100'})
+            expected_key=module.part_key(fps[0])
         self.assertEqual([[fp.ref for fp in group] for group in groups],[['R1','R2'],['R3'],['C1']])
+        self.assertEqual(merged['R2'],'C100')
+        self.assertIn(expected_key,completed)
 
 if __name__=='__main__':unittest.main()
