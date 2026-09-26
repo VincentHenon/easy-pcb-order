@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 import wx
 import pcbnew
-from .parts import PART, PartsDialog, read_assignments, write_assignments
+from .parts import PART, PartsDialog, ReviewDialog, part_key, read_assignments, write_assignments
 from . import geometry, wizard
 
 EDGE = pcbnew.Edge_Cuts
@@ -278,6 +278,16 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
             for fp in eligible:
                 if PART.fullmatch(part_number(fp)):
                     assignments.setdefault(fp.GetReference(),part_number(fp))
+            known={}
+            for fp in eligible:
+                ref=fp.GetReference()
+                if ref in assignments:
+                    known.setdefault(part_key(fp),set()).add(assignments[ref])
+            for fp in eligible:
+                ref=fp.GetReference()
+                matches=known.get(part_key(fp),set())
+                if ref not in assignments and len(matches)==1:
+                    assignments[ref]=next(iter(matches))
             missing=[fp for fp in eligible if fp.GetReference() not in assignments]
             if missing:
                 with PartsDialog(None,missing,assignments) as dialog:
@@ -286,8 +296,10 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                         assignments=dialog.mapping
                     finally:
                         dialog.clear_highlight()
-            if not missing:
-                wx.MessageBox('Tous les composants à assembler ont déjà une référence LCSC enregistrée.','Étape 5 / 6 — composants',wx.OK|wx.ICON_INFORMATION)
+            if eligible:
+                with ReviewDialog(None,[[fp] for fp in eligible],assignments) as dialog:
+                    if dialog.ShowModal()!=wx.ID_OK:return
+                    assignments=dialog.mapping
             preset=wizard.factory_choice()
             if preset is None:return
             cli=find_cli()
