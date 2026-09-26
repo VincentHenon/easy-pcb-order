@@ -13,6 +13,39 @@ import wx
 
 PART = re.compile(r'^C[1-9][0-9]*$', re.I)
 
+def part_key(fp):
+    """Conservative grouping: same symbol family, value, footprint and assembly type."""
+    ref=fp.GetReference()
+    family=re.match(r'[A-Za-z]+',ref)
+    family=family.group(0).upper() if family else ref.upper()
+    value=' '.join(fp.GetValue().casefold().split())
+    footprint=str(fp.GetFPID().GetLibItemName()).casefold()
+    try:
+        import pcbnew
+        assembly='SMD' if fp.GetAttributes() & pcbnew.FP_SMD else 'THT'
+    except (ImportError,AttributeError):
+        assembly='unknown'
+    details=[]
+    if hasattr(fp,'GetFields'):
+        for field in fp.GetFields():
+            name=field.GetName().strip().casefold()
+            if name in ('mpn','manufacturer','color','colour','tolerance','voltage','dielectric','power','wattage','current','intensity','polarity'):
+                details.append((name,field.GetText().strip().casefold()))
+    return family,value,footprint,assembly,tuple(sorted(details))
+
+def group_footprints(footprints, assignments):
+    """Keep conflicting known part numbers separate; never guess LED color or ratings."""
+    groups={}
+    for fp in footprints:
+        key=part_key(fp)
+        existing=assignments.get(fp.GetReference())
+        if existing is not None:
+            key+=(existing,)
+        else:
+            key+=(None,)
+        groups.setdefault(key,[]).append(fp)
+    return list(groups.values())
+
 def search_lcsc(term):
     key, secret = os.getenv('LCSC_API_KEY',''), os.getenv('LCSC_API_SECRET','')
     if not key or not secret:
@@ -63,16 +96,18 @@ def write_assignments(source, mapping):
     tmp.replace(path)
 
 class PartsDialog(wx.Dialog):
-    """One footprint at a time, with a temporary KiCad canvas highlight."""
+    """One conservative group at a time, with canvas and dialog feedback."""
     def __init__(self,parent,footprints,mapping):
-        super().__init__(parent,title='Étape 5 — composants à assembler',size=(620,320))
+        super().__init__(parent,title='Étape 5 — composants à assembler',size=(760,440))
         self.mapping=dict(mapping)
-        self.fps=footprints
+        self.groups=group_footprints(footprints,self.mapping)
         self.index=0
-        self.highlighted=None
+        self.highlighted=[]
         root=wx.BoxSizer(wx.VERTICAL)
         self.heading=wx.StaticText(self,label='')
         root.Add(self.heading,0,wx.ALL,12)
+        self.visual=wx.StaticText(self,label='')
+        root.Add(self.visual,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,12)
         self.part=wx.TextCtrl(self)
         row=wx.BoxSizer(wx.HORIZONTAL)
         row.Add(wx.StaticText(self,label='Référence LCSC :'),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,8)
@@ -84,7 +119,7 @@ class PartsDialog(wx.Dialog):
         for title,handler in [('Rechercher LCSC',self.search),('Catalogue JLCPCB',self.open_site)]:
             b=wx.Button(self,label=title);b.Bind(wx.EVT_BUTTON,handler);actions.Add(b,0,wx.RIGHT,8)
         root.Add(actions,0,wx.LEFT|wx.RIGHT,12)
-        root.Add(wx.StaticText(self,label='Vérifie la valeur et l’empreinte dans la fiche du fabricant avant de confirmer.'),0,wx.ALL,12)
+        root.Add(wx.StaticText(self,label='Même référence uniquement si valeur, boîtier, caractéristiques et polarité correspondent. Vérifie la fiche fabricant.'),0,wx.ALL,12)
         buttons=wx.BoxSizer(wx.HORIZONTAL)
         self.previous=wx.Button(self,label='Précédent')
         self.next=wx.Button(self,label='Suivant')
@@ -97,48 +132,50 @@ class PartsDialog(wx.Dialog):
         self.Bind(wx.EVT_CLOSE,self.on_close)
         wx.CallAfter(self.show_current)
     def clear_highlight(self):
-        if self.highlighted is not None:
+        for fp in self.highlighted:
+            try: fp.ClearBrightened()
+            except Exception: pass
+        if self.highlighted:
             try:
-                self.highlighted.ClearBrightened()
                 import pcbnew
                 pcbnew.Refresh()
-            except Exception:
-                pass
-            self.highlighted=None
+            except Exception: pass
+        self.highlighted=[]
     def show_current(self):
         self.clear_highlight()
-        fp=self.fps[self.index]
-        ref=fp.GetReference()
-        self.heading.SetLabel('%d / %d — %s  •  %s  •  %s' % (self.index+1,len(self.fps),ref,fp.GetValue(),fp.GetFPID().GetLibItemName()))
+        group=self.groups[self.index];fp=group[0];ref=fp.GetReference()
+        refs=', '.join(item.GetReference() for item in group)
+        self.heading.SetLabel('Groupe %d / %d — %d composant(s)  •  %s  •  %s' % (self.index+1,len(self.groups),len(group),fp.GetValue(),fp.GetFPID().GetLibItemName()))
+        self.visual.SetLabel('Empreintes concernées : '+refs+'\nType : '+part_key(fp)[0]+'  •  Ces empreintes recevront le même numéro.\nContrôle visuel : le premier composant du groupe est centré dans le PCB Editor si KiCad le permet.')
         self.part.SetValue(self.mapping.get(ref,''))
         self.omit.SetValue(ref in self.mapping and not self.mapping[ref])
         self.previous.Enable(self.index>0)
-        self.next.SetLabel('Terminer' if self.index==len(self.fps)-1 else 'Suivant')
+        self.next.SetLabel('Vérifier la liste' if self.index==len(self.groups)-1 else 'Suivant')
         self.Layout()
         try:
             import pcbnew
-            fp.SetBrightened()
-            self.highlighted=fp
+            for item in group:
+                item.SetBrightened()
+                self.highlighted.append(item)
             pcbnew.FocusOnItem(fp)
             pcbnew.Refresh()
         except Exception:
-            # Continue the assignment process if this KiCad build cannot focus the canvas.
-            self.highlighted=None
+            self.visual.SetLabel(self.visual.GetLabel()+'\nSurbrillance KiCad indisponible : utilise les références affichées ci-dessus.')
     def save_current(self):
-        fp=self.fps[self.index]
         value=self.part.GetValue().strip().upper()
         if self.omit.GetValue():
-            self.mapping[fp.GetReference()]=''
+            for fp in self.groups[self.index]:self.mapping[fp.GetReference()]=''
         elif PART.fullmatch(value):
-            self.mapping[fp.GetReference()]=value
+            for fp in self.groups[self.index]:self.mapping[fp.GetReference()]=value
         else:
             wx.MessageBox('Saisis une référence LCSC (C suivi de chiffres), ou coche « Ne pas assembler ».','Composant à vérifier',wx.OK|wx.ICON_WARNING)
             return False
         return True
     def forward(self,event):
         if not self.save_current(): return
-        if self.index==len(self.fps)-1:
-            self.clear_highlight();self.EndModal(wx.ID_OK)
+        if self.index==len(self.groups)-1:
+            self.clear_highlight()
+            self.EndModal(wx.ID_OK)
         else:
             self.index+=1;self.show_current()
     def back(self,event):
@@ -148,10 +185,10 @@ class PartsDialog(wx.Dialog):
         self.clear_highlight()
         event.Skip()
     def open_site(self,event):
-        fp=self.fps[self.index]
+        fp=self.groups[self.index][0]
         webbrowser.open('https://jlcpcb.com/parts?searchTxt='+urllib.parse.quote(fp.GetValue()))
     def search(self,event):
-        fp=self.fps[self.index]
+        fp=self.groups[self.index][0]
         try:
             with wx.TextEntryDialog(self,'Référence fabricant, mot-clé ou numéro LCSC :','Recherche LCSC',fp.GetValue()) as dlg:
                 if dlg.ShowModal()!=wx.ID_OK:return
@@ -165,3 +202,40 @@ class PartsDialog(wx.Dialog):
                     self.part.SetValue(found[dlg.GetSelection()][0]);self.omit.SetValue(False)
         except Exception as exc:
             wx.MessageBox(str(exc),'Recherche LCSC',wx.OK|wx.ICON_ERROR)
+
+class ReviewDialog(wx.Dialog):
+    """Review every reference independently, including exceptions within a group."""
+    def __init__(self,parent,groups,mapping):
+        super().__init__(parent,title='Vérification des références avant export',size=(850,600))
+        self.mapping=dict(mapping)
+        self.fps=[fp for group in groups for fp in group]
+        root=wx.BoxSizer(wx.VERTICAL)
+        root.Add(wx.StaticText(self,label='Double-clique sur une ligne pour corriger son numéro LCSC ou exclure uniquement ce composant.'),0,wx.ALL,10)
+        self.rows=wx.ListCtrl(self,style=wx.LC_REPORT|wx.LC_SINGLE_SEL)
+        for idx,(title,width) in enumerate((('Référence',100),('Valeur',180),('Empreinte',260),('Numéro LCSC / exclu',180))):
+            self.rows.InsertColumn(idx,title,width=width)
+        for fp in self.fps:
+            row=self.rows.InsertItem(self.rows.GetItemCount(),fp.GetReference())
+            self.rows.SetItem(row,1,fp.GetValue())
+            self.rows.SetItem(row,2,str(fp.GetFPID().GetLibItemName()))
+            self.rows.SetItem(row,3,self.mapping.get(fp.GetReference()) or 'Exclu')
+        self.rows.Bind(wx.EVT_LIST_ITEM_ACTIVATED,self.edit)
+        root.Add(self.rows,1,wx.EXPAND|wx.LEFT|wx.RIGHT,10)
+        edit=wx.Button(self,label='Modifier la ligne sélectionnée')
+        edit.Bind(wx.EVT_BUTTON,self.edit)
+        root.Add(edit,0,wx.ALL,10)
+        root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,10)
+        self.SetSizer(root)
+    def edit(self,event):
+        idx=self.rows.GetFirstSelected()
+        if idx<0:return
+        ref=self.fps[idx].GetReference()
+        with wx.TextEntryDialog(self,'Numéro C… ; laisser vide pour ne pas assembler '+ref,
+                                'Corriger '+ref,self.mapping.get(ref,'')) as dlg:
+            if dlg.ShowModal()!=wx.ID_OK:return
+            value=dlg.GetValue().strip().upper()
+        if value and not PART.fullmatch(value):
+            wx.MessageBox('Le numéro doit être C suivi de chiffres, ou vide pour exclure.','Numéro invalide',wx.OK|wx.ICON_WARNING)
+            return
+        self.mapping[ref]=value
+        self.rows.SetItem(idx,3,value or 'Exclu')
