@@ -14,6 +14,7 @@ import zipfile
 import wx
 import pcbnew
 from .parts import PartsDialog, read_assignments, write_assignments
+from . import geometry
 
 EDGE = pcbnew.Edge_Cuts
 PRESETS = {
@@ -36,69 +37,37 @@ def bb_center(obj):
     b = obj.GetBoundingBox()
     return ((b.GetLeft() + b.GetRight()) / 2, (b.GetTop() + b.GetBottom()) / 2)
 
-def in_poly(p, poly):
-    x, y = p
-    inside = False
-    for (ax, ay), (bx, by) in zip(poly, poly[1:] + poly[:1]):
-        if (ay > y) != (by > y) and x < (bx-ax) * (y-ay) / (by-ay) + ax:
-            inside = not inside
-    return inside
-
 def connected_contours(board):
-    """Closed line/rectangle outlines. Arcs and complex outline geometry fail safely."""
-    edges = [d for d in board.GetDrawings() if d.GetLayer() == EDGE]
+    edges=[d for d in board.GetDrawings() if d.GetLayer()==EDGE]
     if not edges:
         raise ValueError('Aucun contour Edge.Cuts trouvé.')
-    lines = []
+    paths=[]
+    step=pcbnew.FromMM(0.05)
     for d in edges:
-        kind = d.GetShapeStr().lower() if hasattr(d, 'GetShapeStr') else ''
+        kind=d.GetShapeStr().lower()
         if 'rect' in kind:
-            b = d.GetBoundingBox()
-            pts = [(b.GetLeft(), b.GetTop()), (b.GetRight(), b.GetTop()),
-                   (b.GetRight(), b.GetBottom()), (b.GetLeft(), b.GetBottom())]
-            for a, z in zip(pts, pts[1:] + pts[:1]):
-                lines.append((a, z, d))
+            b=d.GetBoundingBox()
+            pts=[(b.GetLeft(),b.GetTop()),(b.GetRight(),b.GetTop()),
+                 (b.GetRight(),b.GetBottom()),(b.GetLeft(),b.GetBottom())]
+            paths.append((pts+[pts[0]],d))
+        elif 'circle' in kind:
+            center=xy(d.GetCenter())
+            radius=d.GetRadius()
+            pts=geometry.circle_points(center,radius,step)
+            paths.append((pts+[pts[0]],d))
+        elif 'arc' in kind:
+            paths.append((geometry.arc_points(xy(d.GetStart()),xy(d.GetArcMid()),xy(d.GetEnd()),step),d))
         elif 'segment' in kind or 'line' in kind:
-            lines.append((xy(d.GetStart()), xy(d.GetEnd()), d))
+            paths.append(([xy(d.GetStart()),xy(d.GetEnd())],d))
         else:
-            raise ValueError('Contour Edge.Cuts non pris en charge (%s). Convertir arcs et courbes en segments ou exporter séparément.' % kind)
-    def close(a, b):
-        return abs(a[0]-b[0]) <= TOL and abs(a[1]-b[1]) <= TOL
-    pending = list(lines)
-    contours = []
-    while pending:
-        a, b, item = pending.pop(0)
-        points, items = [a, b], [item]
-        while not close(points[-1], points[0]):
-            matches = [(i, z, d) for i, (u, v, d) in enumerate(pending)
-                       for z in ([v] if close(u, points[-1]) else ([u] if close(v, points[-1]) else []))]
-            if len(matches) != 1:
-                raise ValueError('Contour Edge.Cuts ouvert, branché ou superposé près de %.2f, %.2f mm.' %
-                                 (pcbnew.ToMM(points[-1][0]), pcbnew.ToMM(points[-1][1])))
-            i, z, d = matches[0]
-            pending.pop(i)
-            points.append(z)
-            items.append(d)
-        if len(points) < 4:
-            raise ValueError('Un contour comporte moins de trois côtés.')
-        contours.append({'poly': points[:-1], 'edges': items})
-    for c in contours:
-        c['area'] = abs(sum(x*y2-x2*y for (x,y),(x2,y2) in zip(c['poly'], c['poly'][1:]+c['poly'][:1]))) / 2
-        c['center'] = (sum(p[0] for p in c['poly'])/len(c['poly']), sum(p[1] for p in c['poly'])/len(c['poly']))
-    # Inner cuts are holes, not another board; reject ambiguity rather than producing a wrong board.
-    for i, c in enumerate(contours):
-        for j, other in enumerate(contours):
-            if i != j and in_poly(c['center'], other['poly']) and c['area'] < other['area']:
-                raise ValueError('Contours imbriqués détectés (découpe interne). Cette version requiert des cartes sans découpe interne.')
-    contours.sort(key=lambda c: (min(p[0] for p in c['poly']), min(p[1] for p in c['poly'])))
-    return contours
+            raise ValueError('Contour Edge.Cuts non pris en charge : %s.' % kind)
+    try:
+        return geometry.classify(geometry.stitch(paths,TOL))
+    except ValueError as e:
+        raise ValueError(str(e)+' (coordonnées internes KiCad)') from e
 
-def owner(point, contours):
-    found = [i for i,c in enumerate(contours) if in_poly(point, c['poly'])]
-    if len(found) != 1:
-        raise ValueError('Élément hors contour ou partagé par plusieurs cartes près de %.2f, %.2f mm.' %
-                         (pcbnew.ToMM(point[0]), pcbnew.ToMM(point[1])))
-    return found[0]
+def owner(point,contours):
+    return geometry.owner(point,contours)
 
 def item_owner(obj, contours):
     p = bb_center(obj)
@@ -108,7 +77,7 @@ def item_owner(obj, contours):
     if isinstance(obj, pcbnew.PCB_TRACK) or isinstance(obj, pcbnew.ZONE):
         for corner in [(b.GetLeft(),b.GetTop()), (b.GetRight(),b.GetTop()),
                        (b.GetRight(),b.GetBottom()), (b.GetLeft(),b.GetBottom())]:
-            if not in_poly(corner, contours[idx]['poly']):
+            if not geometry.contains(corner,contours[idx]['poly']) or any(geometry.contains(corner,hole) for hole in contours[idx]['holes']):
                 raise ValueError('Piste ou zone traversant le contour près de %.2f, %.2f mm.' %
                                  (pcbnew.ToMM(p[0]), pcbnew.ToMM(p[1])))
     return idx
@@ -216,7 +185,7 @@ class BoardDialog(wx.Dialog):
     def __init__(self,parent,contours,board):
         super().__init__(parent,title='easy-pcb-order — cartes à exporter',size=(700,440))
         root=wx.BoxSizer(wx.VERTICAL)
-        root.Add(wx.StaticText(self,label='Un contour Edge.Cuts = une carte. Vérifie le nom, le nombre de couches et les panneaux.'),0,wx.ALL,10)
+        root.Add(wx.StaticText(self,label='Chaque contour extérieur Edge.Cuts est une carte ; les contours intérieurs sont ses découpes.'),0,wx.ALL,10)
         grid=wx.FlexGridSizer(len(contours)+1,4,7,9)
         for title in ('Contour','Nom du design','Couches','Front panel'):
             grid.Add(wx.StaticText(self,label=title))
