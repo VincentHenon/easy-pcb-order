@@ -28,8 +28,11 @@ def load_plugin():
     parts=types.ModuleType('easy_pcb_order.parts')
     parts.PART=re.compile(r'^C[1-9][0-9]*$',re.I)
     parts.PartsDialog=object
+    parts.ImportDialog=object
     parts.ReviewDialog=object
     parts.part_key=lambda fp:(fp.GetReference()[0],fp.GetValue(),fp.GetFPID().GetLibItemName(),fp.GetAttributes())
+    parts.group_footprints=lambda fps,mapping:[[fp] for fp in fps]
+    parts.apply_imported_groups=lambda fps,mapping,imported:(mapping,set())
     parts.read_assignments=lambda x:{}
     parts.write_assignments=lambda x,y:None
     parts.read_stock_notes=lambda x:{}
