@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+*.kicad_pcb.parts.json
+.DS_Store
