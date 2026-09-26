@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 import wx
 import pcbnew
-from .parts import PART, PartsDialog, ReviewDialog, part_key, read_assignments, write_assignments
+from .parts import PART, PartsDialog, ReviewDialog, part_key, read_assignments, write_assignments, read_stock_notes, write_stock_notes
 from . import geometry, wizard
 
 EDGE = pcbnew.Edge_Cuts
@@ -297,9 +297,10 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                     finally:
                         dialog.clear_highlight()
             if eligible:
-                with ReviewDialog(None,[[fp] for fp in eligible],assignments) as dialog:
+                with ReviewDialog(None,[[fp] for fp in eligible],assignments,read_stock_notes(source)) as dialog:
                     if dialog.ShowModal()!=wx.ID_OK:return
                     assignments=dialog.mapping
+                    stock_notes=dialog.stock_notes
             preset=wizard.factory_choice()
             if preset is None:return
             cli=find_cli()
@@ -314,6 +315,7 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                 shutil.move(str(stage),str(base))
             if PRESETS[preset]['bom']:
                 write_assignments(source,assignments)
+                if eligible:write_stock_notes(source,stock_notes)
             wx.MessageBox('%d cartes exportées dans :\n%s' % (len(entries),base),'easy-pcb-order',wx.OK|wx.ICON_INFORMATION)
         except Exception as e:
             wx.MessageBox(str(e),'easy-pcb-order — export interrompu',wx.OK|wx.ICON_ERROR)
