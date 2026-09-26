@@ -14,6 +14,7 @@ import urllib.request
 import webbrowser
 import wx
 from . import preview
+from .bom_import import parse_kicad_xml
 
 PART = re.compile(r'^C[1-9][0-9]*$', re.I)
 
@@ -38,6 +39,19 @@ def group_footprints(footprints, assignments):
         key=part_key(fp)
         groups.setdefault(key,[]).append(fp)
     return list(groups.values())
+
+def apply_imported_groups(footprints, assignments, imported):
+    """Complete groups with a single imported code; leave conflicts for manual review."""
+    merged=dict(assignments)
+    merged.update(imported)
+    completed=set()
+    for group in group_footprints(footprints,merged):
+        codes={imported[fp.GetReference()] for fp in group if fp.GetReference() in imported}
+        if len(codes)==1:
+            code=next(iter(codes))
+            for fp in group:merged[fp.GetReference()]=code
+            completed.add(part_key(group[0]))
+    return merged,completed
 
 def search_lcsc(term):
     key, secret = os.getenv('LCSC_API_KEY',''), os.getenv('LCSC_API_SECRET','')
@@ -101,6 +115,47 @@ def write_stock_notes(source, notes):
     tmp.write_text(json.dumps(notes,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
     tmp.replace(path)
 
+class ImportDialog(wx.Dialog):
+    """Optional BOM import before any part assignment; report matches explicitly."""
+    def __init__(self,parent,footprints):
+        super().__init__(parent,title='easy-pcb-order  ·  Importer une BOM',size=(690,360))
+        self.SetBackgroundColour(preview.BG)
+        self.footprints=footprints
+        self.imported={}
+        root=wx.BoxSizer(wx.VERTICAL)
+        title=wx.StaticText(self,label='Importer des références existantes')
+        title.SetForegroundColour(preview.INK)
+        font=title.GetFont();font.SetPointSize(font.GetPointSize()+5);font.SetWeight(wx.FONTWEIGHT_BOLD)
+        title.SetFont(font)
+        root.Add(title,0,wx.ALL,24)
+        description=wx.StaticText(self,label='BOM XML exportée depuis KiCad : les champs LCSC ou JLCPCB sont associés aux références du PCB.\nUn fichier partiel convient. Les autres groupes seront proposés à l’étape suivante.')
+        description.SetForegroundColour(preview.MUTED)
+        root.Add(description,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,24)
+        root.Add(preview.ActionButton(self,'Choisir un fichier XML',self.choose,width=230),0,wx.LEFT|wx.RIGHT,24)
+        self.summary=wx.StaticText(self,label='Aucun fichier sélectionné. Tu peux continuer et attribuer les références manuellement.')
+        self.summary.SetForegroundColour(preview.ACCENT)
+        root.Add(self.summary,0,wx.ALL,24)
+        root.AddStretchSpacer()
+        footer=wx.BoxSizer(wx.HORIZONTAL)
+        footer.Add(preview.ActionButton(self,'Annuler',lambda event:self.EndModal(wx.ID_CANCEL),width=120),0,wx.RIGHT,12)
+        footer.Add(preview.ActionButton(self,'Continuer  →',lambda event:self.EndModal(wx.ID_OK),'primary',width=180))
+        root.Add(footer,0,wx.ALIGN_RIGHT|wx.ALL,24)
+        self.SetSizer(root)
+    def choose(self,event):
+        with wx.FileDialog(self,'Choisir une BOM XML KiCad',wildcard='BOM XML (*.xml)|*.xml',style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal()!=wx.ID_OK:return
+            path=dlg.GetPath()
+        try:
+            imported,ignored,invalid=parse_kicad_xml(path,self.footprints)
+        except (OSError,ValueError) as exc:
+            wx.MessageBox(str(exc),'Import BOM',wx.OK|wx.ICON_WARNING)
+            return
+        self.imported=imported
+        self.summary.SetLabel('%s\n%d référence(s) LCSC trouvée(s) sur ce PCB · %d ligne(s) ignorée(s) · %d numéro(s) invalide(s).' % (
+            Path(path).name,len(imported),ignored,invalid))
+        self.summary.Wrap(620)
+        self.Layout()
+
 class PartsDialog(wx.Dialog):
     """One conservative group at a time, with canvas and dialog feedback."""
     def __init__(self,parent,footprints,mapping):
@@ -117,26 +172,29 @@ class PartsDialog(wx.Dialog):
         self.closed=False
         self.SetBackgroundColour(preview.BG)
         root=wx.BoxSizer(wx.VERTICAL)
-        eyebrow=wx.StaticText(self,label='EASY PCB ORDER   /   COMPOSANTS')
+        body=wx.ScrolledWindow(self,style=wx.VSCROLL)
+        body.SetBackgroundColour(preview.BG)
+        content=wx.BoxSizer(wx.VERTICAL)
+        eyebrow=wx.StaticText(body,label='EASY PCB ORDER   /   COMPOSANTS')
         eyebrow.SetForegroundColour(preview.ACCENT)
-        root.Add(eyebrow,0,wx.LEFT|wx.RIGHT|wx.TOP,24)
-        self.heading=wx.StaticText(self,label='')
+        content.Add(eyebrow,0,wx.LEFT|wx.RIGHT|wx.TOP,24)
+        self.heading=wx.StaticText(body,label='')
         self.heading.SetForegroundColour(preview.INK)
         font=self.heading.GetFont();font.SetPointSize(font.GetPointSize()+5);font.SetWeight(wx.FONTWEIGHT_BOLD)
         self.heading.SetFont(font)
-        root.Add(self.heading,0,wx.LEFT|wx.RIGHT|wx.TOP|wx.BOTTOM,24)
-        self.progress=preview.ProgressTrack(self)
-        root.Add(self.progress,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,24)
+        content.Add(self.heading,0,wx.LEFT|wx.RIGHT|wx.TOP|wx.BOTTOM,24)
+        self.progress=preview.ProgressTrack(body)
+        content.Add(self.progress,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,24)
         gallery=wx.BoxSizer(wx.HORIZONTAL)
-        self.footprint_preview=preview.FootprintPreview(self)
-        self.model_preview=preview.ModelPreview(self)
+        self.footprint_preview=preview.FootprintPreview(body)
+        self.model_preview=preview.ModelPreview(body)
         gallery.Add(self.footprint_preview,1,wx.EXPAND|wx.RIGHT,12)
         gallery.Add(self.model_preview,1,wx.EXPAND)
-        root.Add(gallery,0,wx.EXPAND|wx.LEFT|wx.RIGHT,24)
-        self.visual=wx.StaticText(self,label='')
+        content.Add(gallery,0,wx.EXPAND|wx.LEFT|wx.RIGHT,24)
+        self.visual=wx.StaticText(body,label='')
         self.visual.SetForegroundColour(preview.MUTED)
-        root.Add(self.visual,0,wx.LEFT|wx.RIGHT|wx.TOP|wx.BOTTOM,24)
-        assignment=wx.Panel(self)
+        content.Add(self.visual,0,wx.LEFT|wx.RIGHT|wx.TOP|wx.BOTTOM,24)
+        assignment=wx.Panel(body)
         assignment.SetBackgroundColour(preview.CARD)
         block=wx.BoxSizer(wx.VERTICAL)
         label=wx.StaticText(assignment,label='NUMÉRO LCSC  ·  UN CHOIX POUR TOUT LE GROUPE')
@@ -150,28 +208,29 @@ class PartsDialog(wx.Dialog):
         self.part.SetHint('Exemple : C25804')
         self.part.Bind(wx.EVT_TEXT_ENTER,self.forward)
         block.Add(self.part,0,wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM,14)
-        self.omit=wx.CheckBox(assignment,label='Ne pas assembler ce groupe')
-        self.omit.SetForegroundColour(preview.INK)
-        block.Add(self.omit,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,14)
         assignment.SetSizer(block)
-        root.Add(assignment,0,wx.EXPAND|wx.LEFT|wx.RIGHT,24)
+        content.Add(assignment,0,wx.EXPAND|wx.LEFT|wx.RIGHT,24)
         actions=wx.BoxSizer(wx.HORIZONTAL)
         for title,handler in [('Rechercher LCSC',self.search),('Catalogue JLCPCB',self.open_site)]:
-            b=preview.ActionButton(self,title,handler,width=175)
+            b=preview.ActionButton(body,title,handler,width=175)
             actions.Add(b,0,wx.RIGHT,10)
-        root.Add(actions,0,wx.LEFT|wx.RIGHT|wx.TOP,24)
-        hint=wx.StaticText(self,label='Vérifie couleur, tension, tolérance et polarité dans la fiche fabricant avant de valider le groupe.')
+        content.Add(actions,0,wx.LEFT|wx.RIGHT|wx.TOP,24)
+        hint=wx.StaticText(body,label='Vérifie couleur, tension, tolérance et polarité dans la fiche fabricant avant de valider le groupe.')
         hint.SetForegroundColour(preview.MUTED)
-        root.Add(hint,0,wx.LEFT|wx.RIGHT|wx.TOP,24)
-        root.AddStretchSpacer()
+        content.Add(hint,0,wx.ALL,24)
+        body.SetSizer(content);body.SetScrollRate(0,12)
+        self.body=body
+        root.Add(body,1,wx.EXPAND)
         buttons=wx.BoxSizer(wx.HORIZONTAL)
         self.previous=preview.ActionButton(self,'←  Précédent',self.back,width=150)
         self.next=preview.ActionButton(self,'Suivant  →',self.forward,'primary',width=185)
+        self.skip=preview.ActionButton(self,'Ne pas placer  →',self.skip_group,width=180)
         cancel=preview.ActionButton(self,'Annuler',lambda event:self.EndModal(wx.ID_CANCEL),width=120)
         buttons.Add(cancel,0,wx.RIGHT,12)
         buttons.Add(self.previous,0,wx.RIGHT,12)
+        buttons.Add(self.skip,0,wx.RIGHT,12)
         buttons.Add(self.next)
-        root.Add(buttons,0,wx.ALIGN_RIGHT|wx.ALL,24)
+        root.Add(buttons,0,wx.ALIGN_RIGHT|wx.LEFT|wx.RIGHT|wx.TOP|wx.BOTTOM,18)
         self.SetSizer(root)
         self.Bind(wx.EVT_CLOSE,self.on_close)
         wx.CallAfter(self.show_current)
@@ -206,11 +265,10 @@ class PartsDialog(wx.Dialog):
         self.visual.SetLabel('Empreintes concernées : '+refs+'\nUne seule référence sera appliquée à tout ce groupe. Exceptions modifiables à l’étape suivante.\nContrôle visuel : le premier composant est centré dans le PCB Editor si KiCad le permet.'+('\nAttention : ce groupe avait plusieurs attributions différentes ; vérifie-les dans la liste finale.' if len(values)>1 else ''))
         self.visual.Wrap(920)
         self.part.SetValue(next(iter(values)) if len(values)==1 else '')
-        self.omit.SetValue(values=={''})
         self.previous.Enable(self.index>0)
         self.next.label='Vérifier la liste  →' if self.index==len(self.groups)-1 else 'Suivant  →'
         self.next.Refresh()
-        self.Layout()
+        self.body.FitInside();self.Layout()
         try:
             import pcbnew
             for item in group:
@@ -222,23 +280,26 @@ class PartsDialog(wx.Dialog):
             self.visual.SetLabel(self.visual.GetLabel()+'\nSurbrillance KiCad indisponible : utilise les références affichées ci-dessus.')
     def save_current(self):
         value=self.part.GetValue().strip().upper()
-        if self.omit.GetValue():
-            for fp in self.groups[self.index]:self.mapping[fp.GetReference()]=''
-        elif PART.fullmatch(value):
+        if PART.fullmatch(value):
             for fp in self.groups[self.index]:self.mapping[fp.GetReference()]=value
         else:
-            wx.MessageBox('Saisis une référence LCSC (C suivi de chiffres), ou coche « Ne pas assembler ».','Composant à vérifier',wx.OK|wx.ICON_WARNING)
+            wx.MessageBox('Saisis une référence LCSC (C suivi de chiffres), ou clique sur « Ne pas placer ».','Composant à vérifier',wx.OK|wx.ICON_WARNING)
             return False
         return True
     def forward(self,event):
         if not self.save_current(): return
+        self.advance()
+    def skip_group(self,event):
+        for fp in self.groups[self.index]:self.mapping[fp.GetReference()]=''
+        self.advance()
+    def advance(self):
         if self.index==len(self.groups)-1:
             self.clear_highlight()
             self.EndModal(wx.ID_OK)
         else:
             self.index+=1;self.show_current()
     def back(self,event):
-        if not self.save_current(): return
+        if self.part.GetValue().strip() and not self.save_current():return
         self.index-=1;self.show_current()
     def on_close(self,event):
         self.clear_highlight()
@@ -307,7 +368,7 @@ class PartsDialog(wx.Dialog):
             options=['%s — %s — stock : %s' % item for item in found]
             with wx.SingleChoiceDialog(self,'Vérifie valeur et boîtier avant de choisir.','Résultats LCSC',options) as dlg:
                 if dlg.ShowModal()==wx.ID_OK:
-                    self.part.SetValue(found[dlg.GetSelection()][0]);self.omit.SetValue(False)
+                    self.part.SetValue(found[dlg.GetSelection()][0])
         except Exception as exc:
             wx.MessageBox(str(exc),'Recherche LCSC',wx.OK|wx.ICON_ERROR)
 
