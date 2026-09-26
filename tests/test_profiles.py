@@ -32,6 +32,8 @@ def load_plugin():
     parts.part_key=lambda fp:(fp.GetReference()[0],fp.GetValue(),fp.GetFPID().GetLibItemName(),fp.GetAttributes())
     parts.read_assignments=lambda x:{}
     parts.write_assignments=lambda x,y:None
+    parts.read_stock_notes=lambda x:{}
+    parts.write_stock_notes=lambda x,y:None
     wizard=types.ModuleType('easy_pcb_order.wizard')
     spec=importlib.util.spec_from_file_location('easy_pcb_order.plugin',ROOT/'plugin.py')
     module=importlib.util.module_from_spec(spec)
