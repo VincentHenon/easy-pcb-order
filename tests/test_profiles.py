@@ -19,6 +19,7 @@ def load_plugin():
     pcb.ToMM=lambda x:x
     pcb.ActionPlugin=type('ActionPlugin',(),{})
     pcb.FP_SMD=1
+    pcb.VIATYPE_THROUGH=1
     pcb.PCB_TRACK=type('PCB_TRACK',(),{})
     pcb.PCB_VIA=type('PCB_VIA',(pcb.PCB_TRACK,),{})
     pcb.ZONE=type('ZONE',(),{})
@@ -49,6 +50,20 @@ class FakeFootprint:
     def GetFields(self):return []
 
 class ProfileTests(unittest.TestCase):
+    def test_two_layer_design_keeps_through_via(self):
+        plugin=load_plugin()
+        via=plugin.pcbnew.PCB_VIA()
+        via.GetLayer=lambda:0
+        via.GetViaType=lambda:plugin.pcbnew.VIATYPE_THROUGH
+        via.HasValidLayerPair=lambda count:True
+        board=types.SimpleNamespace(GetCopperLayerCount=lambda:4,GetTracks=lambda:[via],
+                 Zones=lambda:[],GetDrawings=lambda:[],GetLayerID=lambda name:name)
+        with patch.object(plugin,'item_owner',return_value=0):
+            plugin.validate_design_layers(board,0,[{}],2)
+            via.GetViaType=lambda:2
+            via.HasValidLayerPair=lambda count:False
+            with self.assertRaisesRegex(ValueError,'via borgne'):
+                plugin.validate_design_layers(board,0,[{}],2)
     def test_factory_bom_and_smd_only_position(self):
         plugin=load_plugin()
         board=types.SimpleNamespace(GetFootprints=lambda:[FakeFootprint('R1',True),FakeFootprint('R2',False)])
