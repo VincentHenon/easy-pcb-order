@@ -63,71 +63,105 @@ def write_assignments(source, mapping):
     tmp.replace(path)
 
 class PartsDialog(wx.Dialog):
+    """One footprint at a time, with a temporary KiCad canvas highlight."""
     def __init__(self,parent,footprints,mapping):
-        super().__init__(parent,title='Choisir les composants avant la BOM',size=(780,600))
+        super().__init__(parent,title='Étape 5 — composants à assembler',size=(620,320))
         self.mapping=dict(mapping)
         self.fps=footprints
+        self.index=0
+        self.highlighted=None
         root=wx.BoxSizer(wx.VERTICAL)
-        root.Add(wx.StaticText(self,label='Sélectionne une empreinte, recherche sa pièce, puis confirme le numéro LCSC. Les choix seront enregistrés dans un fichier du projet.'),0,wx.ALL,9)
-        self.list=wx.ListCtrl(self,style=wx.LC_REPORT|wx.LC_SINGLE_SEL)
-        for col,width in [('Référence',85),('Valeur',150),('Empreinte',210),('Référence LCSC',125),('Mode',100)]:
-            self.list.InsertColumn(self.list.GetColumnCount(),col,width=width)
-        for i,fp in enumerate(footprints):
-            ref=fp.GetReference()
-            self.list.InsertItem(i,ref)
-            self.list.SetItem(i,1,fp.GetValue())
-            self.list.SetItem(i,2,str(fp.GetFPID().GetLibItemName()))
-            self.list.SetItem(i,3,self.mapping.get(ref,''))
-            self.list.SetItem(i,4,'Assemblé' if self.mapping.get(ref) else 'Non assemblé')
-        root.Add(self.list,1,wx.EXPAND|wx.ALL,8)
+        self.heading=wx.StaticText(self,label='')
+        root.Add(self.heading,0,wx.ALL,12)
+        self.part=wx.TextCtrl(self)
+        row=wx.BoxSizer(wx.HORIZONTAL)
+        row.Add(wx.StaticText(self,label='Référence LCSC :'),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,8)
+        row.Add(self.part,1,wx.EXPAND)
+        root.Add(row,0,wx.EXPAND|wx.LEFT|wx.RIGHT,12)
+        self.omit=wx.CheckBox(self,label='Ne pas assembler ce composant')
+        root.Add(self.omit,0,wx.ALL,12)
         actions=wx.BoxSizer(wx.HORIZONTAL)
-        for title,action in [('Recherche LCSC API',self.search),('Chercher sur JLCPCB',self.open_site),('Saisir C…',self.set_number),('Ne pas assembler',self.skip)]:
-            button=wx.Button(self,label=title); button.Bind(wx.EVT_BUTTON,action); actions.Add(button,0,wx.RIGHT,6)
-        root.Add(actions,0,wx.ALL,8)
-        root.Add(wx.StaticText(self,label='L’API LCSC exige LCSC_API_KEY et LCSC_API_SECRET. Vérifie empreinte, tension, tolérance, stock et compatibilité JLCPCB avant de choisir.'),0,wx.ALL,9)
-        root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,9)
+        for title,handler in [('Rechercher LCSC',self.search),('Catalogue JLCPCB',self.open_site)]:
+            b=wx.Button(self,label=title);b.Bind(wx.EVT_BUTTON,handler);actions.Add(b,0,wx.RIGHT,8)
+        root.Add(actions,0,wx.LEFT|wx.RIGHT,12)
+        root.Add(wx.StaticText(self,label='Vérifie la valeur et l’empreinte dans la fiche du fabricant avant de confirmer.'),0,wx.ALL,12)
+        buttons=wx.BoxSizer(wx.HORIZONTAL)
+        self.previous=wx.Button(self,label='Précédent')
+        self.next=wx.Button(self,label='Suivant')
+        cancel=wx.Button(self,wx.ID_CANCEL,label='Annuler')
+        self.previous.Bind(wx.EVT_BUTTON,self.back)
+        self.next.Bind(wx.EVT_BUTTON,self.forward)
+        buttons.Add(self.previous,0,wx.RIGHT,8);buttons.Add(self.next,0,wx.RIGHT,8);buttons.Add(cancel)
+        root.Add(buttons,0,wx.ALIGN_RIGHT|wx.ALL,12)
         self.SetSizer(root)
-    def selected(self):
-        i=self.list.GetFirstSelected()
-        if i<0:
-            raise ValueError('Sélectionne une ligne d’abord.')
-        return i,self.fps[i]
-    def assign(self,num):
-        i,fp=self.selected()
-        if num and not PART.fullmatch(num):
-            raise ValueError('La référence doit être au format C suivi de chiffres (exemple : C25804).')
-        self.mapping[fp.GetReference()]=num.upper()
-        self.list.SetItem(i,3,num.upper())
-        self.list.SetItem(i,4,'Assemblé' if num else 'Non assemblé')
-    def set_number(self,event):
+        self.Bind(wx.EVT_CLOSE,self.on_close)
+        wx.CallAfter(self.show_current)
+    def clear_highlight(self):
+        if self.highlighted is not None:
+            try:
+                self.highlighted.ClearBrightened()
+                import pcbnew
+                pcbnew.Refresh()
+            except Exception:
+                pass
+            self.highlighted=None
+    def show_current(self):
+        self.clear_highlight()
+        fp=self.fps[self.index]
+        ref=fp.GetReference()
+        self.heading.SetLabel('%d / %d — %s  •  %s  •  %s' % (self.index+1,len(self.fps),ref,fp.GetValue(),fp.GetFPID().GetLibItemName()))
+        self.part.SetValue(self.mapping.get(ref,''))
+        self.omit.SetValue(ref in self.mapping and not self.mapping[ref])
+        self.previous.Enable(self.index>0)
+        self.next.SetLabel('Terminer' if self.index==len(self.fps)-1 else 'Suivant')
+        self.Layout()
         try:
-            i,fp=self.selected()
-            with wx.TextEntryDialog(self,'Numéro choisi dans le catalogue JLCPCB/LCSC :',fp.GetReference(),self.mapping.get(fp.GetReference(),'')) as dlg:
-                if dlg.ShowModal()==wx.ID_OK:
-                    self.assign(dlg.GetValue().strip())
-        except Exception as e:
-            wx.MessageBox(str(e),'Composants',wx.OK|wx.ICON_ERROR)
-    def skip(self,event):
-        try: self.assign('')
-        except Exception as e: wx.MessageBox(str(e),'Composants',wx.OK|wx.ICON_ERROR)
+            import pcbnew
+            fp.SetBrightened()
+            self.highlighted=fp
+            pcbnew.FocusOnItem(fp)
+            pcbnew.Refresh()
+        except Exception:
+            # Continue the assignment process if this KiCad build cannot focus the canvas.
+            self.highlighted=None
+    def save_current(self):
+        fp=self.fps[self.index]
+        value=self.part.GetValue().strip().upper()
+        if self.omit.GetValue():
+            self.mapping[fp.GetReference()]=''
+        elif PART.fullmatch(value):
+            self.mapping[fp.GetReference()]=value
+        else:
+            wx.MessageBox('Saisis une référence LCSC (C suivi de chiffres), ou coche « Ne pas assembler ».','Composant à vérifier',wx.OK|wx.ICON_WARNING)
+            return False
+        return True
+    def forward(self,event):
+        if not self.save_current(): return
+        if self.index==len(self.fps)-1:
+            self.clear_highlight();self.EndModal(wx.ID_OK)
+        else:
+            self.index+=1;self.show_current()
+    def back(self,event):
+        if not self.save_current(): return
+        self.index-=1;self.show_current()
+    def on_close(self,event):
+        self.clear_highlight()
+        event.Skip()
     def open_site(self,event):
-        try:
-            _,fp=self.selected()
-            term=urllib.parse.quote(fp.GetValue())
-            webbrowser.open('https://jlcpcb.com/parts?searchTxt='+term)
-        except Exception as e: wx.MessageBox(str(e),'Composants',wx.OK|wx.ICON_ERROR)
+        fp=self.fps[self.index]
+        webbrowser.open('https://jlcpcb.com/parts?searchTxt='+urllib.parse.quote(fp.GetValue()))
     def search(self,event):
+        fp=self.fps[self.index]
         try:
-            _,fp=self.selected()
             with wx.TextEntryDialog(self,'Référence fabricant, mot-clé ou numéro LCSC :','Recherche LCSC',fp.GetValue()) as dlg:
-                if dlg.ShowModal()!=wx.ID_OK: return
+                if dlg.ShowModal()!=wx.ID_OK:return
                 term=dlg.GetValue().strip()
-            if not term: return
+            if not term:return
             found=search_lcsc(term)
-            if not found: raise ValueError('Aucun résultat reconnu ; essaie le numéro C… ou recherche sur le site.')
-            options=['%s  —  %s  —  stock : %s' % r for r in found]
-            with wx.SingleChoiceDialog(self,'Vérifie la fiche fabricant et l’empreinte avant d’affecter.','Résultats LCSC',options) as dlg:
+            if not found:raise ValueError('Aucun résultat reconnu. Essaie une référence C… ou le catalogue JLCPCB.')
+            options=['%s — %s — stock : %s' % item for item in found]
+            with wx.SingleChoiceDialog(self,'Vérifie valeur et boîtier avant de choisir.','Résultats LCSC',options) as dlg:
                 if dlg.ShowModal()==wx.ID_OK:
-                    self.assign(found[dlg.GetSelection()][0])
-        except Exception as e:
-            wx.MessageBox(str(e),'Recherche LCSC',wx.OK|wx.ICON_ERROR)
+                    self.part.SetValue(found[dlg.GetSelection()][0]);self.omit.SetValue(False)
+        except Exception as exc:
+            wx.MessageBox(str(exc),'Recherche LCSC',wx.OK|wx.ICON_ERROR)
