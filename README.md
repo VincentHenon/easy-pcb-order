@@ -1,11 +1,11 @@
-# MultiPCB Fab — prototype KiCad 9/10
+# easy-pcb-order — prototype KiCad 9/10
 
 Plugin pour un projet comportant plusieurs cartes indépendantes dans **un seul fichier `.kicad_pcb`**. Il détecte les contours fermés `Edge.Cuts`, demande un nom, un nombre de couches et la qualification « front panel » pour chacun, puis propose JLCPCB, PCBWay et Generic Gerber. Chaque carte reçoit son propre `gerbers.zip` avec fichiers Gerber et perçages ; les cartes non marquées « front panel » reçoivent aussi `bom.csv` et `positions.csv` si le preset les demande. Il ne modifie jamais le PCB d'origine.
 
 ## Installation
 
-1. Décompresser l'archive. Copier le dossier `multipcb_fab` (qui contient `__init__.py`) dans le dossier des plugins de KiCad. Sur macOS, ouvrir **Éditeur de PCB → Outils → Plugins externes → Révéler le dossier des plugins dans le Finder**. Sinon, utiliser `~/Documents/KiCad/<version>/scripting/plugins/` et créer `plugins` si nécessaire.
-2. Redémarrer l'Éditeur de PCB ou actualiser les plugins externes. Lancer **Outils → Plugins externes → MultiPCB Fab — exports par carte**.
+1. Décompresser l'archive. Copier le dossier `easy_pcb_order` (qui contient `__init__.py`) dans le dossier des plugins de KiCad. Sur macOS, ouvrir **Éditeur de PCB → Outils → Plugins externes → Révéler le dossier des plugins dans le Finder**. Sinon, utiliser `~/Documents/KiCad/<version>/scripting/plugins/` et créer `plugins` si nécessaire.
+2. Redémarrer l'Éditeur de PCB ou actualiser les plugins externes. Lancer **Outils → Plugins externes → easy-pcb-order**.
 3. Enregistrer le PCB avant l'export. Vérifier dans le dialogue quelle carte correspond à chaque contour (ordre de gauche à droite), saisir les noms, confirmer les couches et cocher « Front panel » le cas échéant.
 4. Après avoir choisi les cartes et le preset, le dialogue **Choisir les composants avant la BOM** affiche les empreintes des cartes à assembler. Sélectionner une ligne, utiliser **Recherche LCSC API** (si autorisée), **Chercher sur JLCPCB** dans le navigateur, ou **Saisir C…**. Le choix « Ne pas assembler » retire la pièce de la BOM et du placement. Les affectations sont enregistrées dans `<projet>.kicad_pcb.parts.json` près du PCB et rechargées au prochain export. Les champs `LCSC`, `LCSC Part #`, `JLCPCB` et `JLCPCB Part #` déjà présents sur le PCB servent de valeurs initiales. Ne pas mettre de clé API dans le projet.
 5. Vérifier dans le visualiseur de JLCPCB les références, rotations et polarités avant commande.
