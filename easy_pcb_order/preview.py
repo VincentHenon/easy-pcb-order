@@ -79,23 +79,47 @@ class FootprintPreview(wx.Panel):
         try:
             pads=list(fp.Pads())
             graphics=list(fp.GraphicalItems())
-            box=fp.GetBoundingBox(False,False) if hasattr(fp,'GetBoundingBox') else None
+            try:box=fp.GetBoundingBox(False,False)
+            except TypeError:box=fp.GetBoundingBox()
             if box is None:return
             left,right=box.GetLeft(),box.GetRight();top,bottom=box.GetTop(),box.GetBottom()
             if right<=left or bottom<=top:return
             scale=min((w-65)/(right-left),(h-80)/(bottom-top))
             ox=(w-(right-left)*scale)/2;oy=48+(h-73-(bottom-top)*scale)/2
             def xy(x,y):return int(ox+(x-left)*scale),int(oy+(y-top)*scale)
-            dc.SetPen(wx.Pen(ACCENT,2));dc.SetBrush(wx.TRANSPARENT_BRUSH)
+            dc.SetBrush(wx.TRANSPARENT_BRUSH)
             import pcbnew
-            visible={pcbnew.F_SilkS,pcbnew.B_SilkS,pcbnew.F_Fab,pcbnew.B_Fab}
+            silk=pcbnew.B_SilkS if fp.IsFlipped() else pcbnew.F_SilkS
+            fab=pcbnew.B_Fab if fp.IsFlipped() else pcbnew.F_Fab
             for graphic in graphics:
                 try:
-                    if graphic.GetLayer() not in visible:continue
-                    start,end=graphic.GetStart(),graphic.GetEnd()
-                    x1,y1=xy(start.x,start.y);x2,y2=xy(end.x,end.y)
-                    dc.DrawLine(x1,y1,x2,y2)
-                except (AttributeError,TypeError):continue
+                    layer=graphic.GetLayer()
+                    if layer not in (silk,fab):continue
+                    dc.SetPen(wx.Pen(INK if layer==silk else MUTED,2 if layer==silk else 1))
+                    if hasattr(graphic,'GetText'):
+                        label=graphic.GetText()
+                        if label and not label.startswith('${'):
+                            p=graphic.GetPosition();x,y=xy(p.x,p.y)
+                            dc.SetTextForeground(INK if layer==silk else MUTED)
+                            dc.DrawText(label[:20],x,y)
+                        continue
+                    kind=graphic.GetShapeStr().lower()
+                    if 'circle' in kind:
+                        center=graphic.GetCenter();cx,cy=xy(center.x,center.y)
+                        radius=max(1,int(graphic.GetRadius()*scale))
+                        dc.DrawCircle(cx,cy,radius)
+                    elif 'rect' in kind:
+                        b=graphic.GetBoundingBox();x1,y1=xy(b.GetLeft(),b.GetTop());x2,y2=xy(b.GetRight(),b.GetBottom())
+                        dc.DrawRectangle(x1,y1,max(1,x2-x1),max(1,y2-y1))
+                    elif 'arc' in kind:
+                        a=graphic.GetStart();m=graphic.GetArcMid();z=graphic.GetEnd()
+                        x1,y1=xy(a.x,a.y);xm,ym=xy(m.x,m.y);x2,y2=xy(z.x,z.y)
+                        dc.DrawSpline([wx.Point(x1,y1),wx.Point(xm,ym),wx.Point(x2,y2)])
+                    else:
+                        start,end=graphic.GetStart(),graphic.GetEnd()
+                        x1,y1=xy(start.x,start.y);x2,y2=xy(end.x,end.y)
+                        dc.DrawLine(x1,y1,x2,y2)
+                except (AttributeError,TypeError,ValueError):continue
             dc.SetPen(wx.Pen(wx.Colour(250,203,122),1))
             dc.SetBrush(wx.Brush(wx.Colour(208,153,79)))
             for pad in pads:
