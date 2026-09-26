@@ -6,11 +6,14 @@ import os
 from pathlib import Path
 import re
 import secrets
+import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
 import webbrowser
 import wx
+from . import preview
 
 PART = re.compile(r'^C[1-9][0-9]*$', re.I)
 
@@ -101,28 +104,47 @@ def write_stock_notes(source, notes):
 class PartsDialog(wx.Dialog):
     """One conservative group at a time, with canvas and dialog feedback."""
     def __init__(self,parent,footprints,mapping):
-        super().__init__(parent,title='Étape 5 — composants à assembler',size=(760,440))
+        super().__init__(parent,title='easy-pcb-order  ·  Choisir les composants',size=(980,720))
         self.mapping=dict(mapping)
         self.groups=group_footprints(footprints,self.mapping)
         self.index=0
         self.highlighted=[]
+        self.preview_dir=tempfile.TemporaryDirectory(prefix='easy-pcb-order-preview-')
+        self.render_token=0
+        self.cached_models={}
+        self.SetBackgroundColour(preview.BG)
         root=wx.BoxSizer(wx.VERTICAL)
         self.heading=wx.StaticText(self,label='')
-        root.Add(self.heading,0,wx.ALL,12)
+        self.heading.SetForegroundColour(preview.INK)
+        font=self.heading.GetFont();font.SetPointSize(font.GetPointSize()+5);font.SetWeight(wx.FONTWEIGHT_BOLD)
+        self.heading.SetFont(font)
+        root.Add(self.heading,0,wx.ALL,18)
+        gallery=wx.BoxSizer(wx.HORIZONTAL)
+        self.footprint_preview=preview.FootprintPreview(self)
+        self.model_preview=preview.ModelPreview(self)
+        gallery.Add(self.footprint_preview,1,wx.EXPAND|wx.RIGHT,12)
+        gallery.Add(self.model_preview,1,wx.EXPAND)
+        root.Add(gallery,0,wx.EXPAND|wx.LEFT|wx.RIGHT,18)
+        self.model_button=wx.Button(self,label='Afficher le modèle 3D')
+        self.model_button.Bind(wx.EVT_BUTTON,self.show_model)
+        root.Add(self.model_button,0,wx.ALL,18)
         self.visual=wx.StaticText(self,label='')
-        root.Add(self.visual,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,12)
+        self.visual.SetForegroundColour(preview.MUTED)
+        root.Add(self.visual,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,18)
         self.part=wx.TextCtrl(self)
         row=wx.BoxSizer(wx.HORIZONTAL)
         row.Add(wx.StaticText(self,label='Référence LCSC :'),0,wx.ALIGN_CENTER_VERTICAL|wx.RIGHT,8)
         row.Add(self.part,1,wx.EXPAND)
-        root.Add(row,0,wx.EXPAND|wx.LEFT|wx.RIGHT,12)
+        root.Add(row,0,wx.EXPAND|wx.LEFT|wx.RIGHT,18)
         self.omit=wx.CheckBox(self,label='Ne pas assembler ce composant')
-        root.Add(self.omit,0,wx.ALL,12)
+        root.Add(self.omit,0,wx.ALL,18)
         actions=wx.BoxSizer(wx.HORIZONTAL)
         for title,handler in [('Rechercher LCSC',self.search),('Catalogue JLCPCB',self.open_site)]:
             b=wx.Button(self,label=title);b.Bind(wx.EVT_BUTTON,handler);actions.Add(b,0,wx.RIGHT,8)
-        root.Add(actions,0,wx.LEFT|wx.RIGHT,12)
-        root.Add(wx.StaticText(self,label='Même référence uniquement si valeur, boîtier, caractéristiques et polarité correspondent. Vérifie la fiche fabricant.'),0,wx.ALL,12)
+        root.Add(actions,0,wx.LEFT|wx.RIGHT,18)
+        hint=wx.StaticText(self,label='Vérifie couleur, tension, tolérance et polarité dans la fiche fabricant avant de valider le groupe.')
+        hint.SetForegroundColour(preview.MUTED)
+        root.Add(hint,0,wx.ALL,18)
         buttons=wx.BoxSizer(wx.HORIZONTAL)
         self.previous=wx.Button(self,label='Précédent')
         self.next=wx.Button(self,label='Suivant')
@@ -130,7 +152,7 @@ class PartsDialog(wx.Dialog):
         self.previous.Bind(wx.EVT_BUTTON,self.back)
         self.next.Bind(wx.EVT_BUTTON,self.forward)
         buttons.Add(self.previous,0,wx.RIGHT,8);buttons.Add(self.next,0,wx.RIGHT,8);buttons.Add(cancel)
-        root.Add(buttons,0,wx.ALIGN_RIGHT|wx.ALL,12)
+        root.Add(buttons,0,wx.ALIGN_RIGHT|wx.ALL,18)
         self.SetSizer(root)
         self.Bind(wx.EVT_CLOSE,self.on_close)
         wx.CallAfter(self.show_current)
@@ -147,10 +169,21 @@ class PartsDialog(wx.Dialog):
     def show_current(self):
         self.clear_highlight()
         group=self.groups[self.index];fp=group[0];ref=fp.GetReference()
+        self.render_token+=1
+        self.footprint_preview.set_footprint(fp)
+        names=preview.model_names(fp)
+        self.model_button.Enable(bool(names))
+        cached=self.cached_models.get(ref)
+        if cached:
+            try:self.model_preview.set_image(cached)
+            except Exception:self.model_preview.set_message('Image 3D indisponible.')
+        elif names:self.model_preview.set_message('Clique sur « Afficher le modèle 3D ».')
+        else:self.model_preview.set_message('Aucun modèle 3D associé à cette empreinte.')
         refs=', '.join(item.GetReference() for item in group)
         self.heading.SetLabel('Groupe %d / %d — %d composant(s)  •  %s  •  %s' % (self.index+1,len(self.groups),len(group),fp.GetValue(),fp.GetFPID().GetLibItemName()))
         values={self.mapping[item.GetReference()] for item in group if item.GetReference() in self.mapping}
         self.visual.SetLabel('Empreintes concernées : '+refs+'\nUne seule référence sera appliquée à tout ce groupe. Exceptions modifiables à l’étape suivante.\nContrôle visuel : le premier composant est centré dans le PCB Editor si KiCad le permet.'+('\nAttention : ce groupe avait plusieurs attributions différentes ; vérifie-les dans la liste finale.' if len(values)>1 else ''))
+        self.visual.Wrap(920)
         self.part.SetValue(next(iter(values)) if len(values)==1 else '')
         self.omit.SetValue(values=={''})
         self.previous.Enable(self.index>0)
@@ -188,6 +221,41 @@ class PartsDialog(wx.Dialog):
     def on_close(self,event):
         self.clear_highlight()
         event.Skip()
+    def show_model(self,event):
+        fp=self.groups[self.index][0];reference=fp.GetReference()
+        cached=self.cached_models.get(reference)
+        if cached:
+            self.model_preview.set_image(cached)
+            return
+        cli=preview.find_cli()
+        if not cli:
+            self.model_preview.set_message('kicad-cli est introuvable sur ce Mac.')
+            return
+        try:
+            import pcbnew
+            source=pcbnew.GetBoard().GetFileName()
+            pcb=preview.prepare_single(source,reference,self.preview_dir.name)
+        except Exception as exc:
+            self.model_preview.set_message('3D indisponible : '+str(exc)[:45])
+            return
+        token=self.render_token
+        self.model_button.Enable(False)
+        self.model_preview.set_message('Rendu 3D en cours…')
+        def work():
+            try:result=(preview.render_prepared(pcb,cli),None)
+            except Exception as exc:result=(None,str(exc))
+            wx.CallAfter(done,result)
+        def done(result):
+            if not self or self.IsBeingDeleted():return
+            image,error=result
+            if image:self.cached_models[reference]=image
+            if self.render_token!=token:return
+            self.model_button.Enable(True)
+            if error:self.model_preview.set_message('3D indisponible : '+error[:45])
+            else:
+                try:self.model_preview.set_image(image)
+                except Exception:self.model_preview.set_message('Impossible de lire le rendu 3D.')
+        threading.Thread(target=work,daemon=True).start()
     def open_site(self,event):
         fp=self.groups[self.index][0]
         webbrowser.open('https://jlcpcb.com/parts?searchTxt='+urllib.parse.quote(fp.GetValue()))
