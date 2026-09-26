@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 import wx
 import pcbnew
-from .parts import PART, PartsDialog, ReviewDialog, read_assignments, write_assignments, read_stock_notes, write_stock_notes
+from .parts import PART, PartsDialog, ImportDialog, ReviewDialog, apply_imported_groups, part_key, read_assignments, write_assignments, read_stock_notes, write_stock_notes
 from . import geometry, wizard
 
 EDGE = pcbnew.Edge_Cuts
@@ -279,13 +279,19 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                 if PART.fullmatch(part_number(fp)):
                     assignments.setdefault(fp.GetReference(),part_number(fp))
             if eligible:
-                with PartsDialog(None,eligible,assignments) as dialog:
-                    try:
-                        if dialog.ShowModal()!=wx.ID_OK:return
-                        assignments=dialog.mapping
-                    finally:
-                        dialog.clear_highlight()
-                        dialog.stop_preview()
+                with ImportDialog(None,eligible) as import_dialog:
+                    if import_dialog.ShowModal()!=wx.ID_OK:return
+                    imported=import_dialog.imported
+                assignments,imported_keys=apply_imported_groups(eligible,assignments,imported)
+                to_assign=[fp for fp in eligible if part_key(fp) not in imported_keys]
+                if to_assign:
+                    with PartsDialog(None,to_assign,assignments) as dialog:
+                        try:
+                            if dialog.ShowModal()!=wx.ID_OK:return
+                            assignments=dialog.mapping
+                        finally:
+                            dialog.clear_highlight()
+                            dialog.stop_preview()
             if eligible:
                 with ReviewDialog(None,[[fp] for fp in eligible],assignments,read_stock_notes(source)) as dialog:
                     if dialog.ShowModal()!=wx.ID_OK:return
