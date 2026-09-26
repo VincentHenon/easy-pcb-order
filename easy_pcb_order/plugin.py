@@ -224,7 +224,9 @@ def validate_design_layers(board,index,contours,target):
                 raise
             continue
         if isinstance(obj,pcbnew.PCB_VIA):
-            raise ValueError('Design %d : un via est présent. Vérifie-le manuellement avant de réduire les couches.' % (index+1))
+            if obj.GetViaType()!=pcbnew.VIATYPE_THROUGH and not obj.HasValidLayerPair(target):
+                raise ValueError('Design %d : un via borgne ou enterré utilise une couche absente de la pile à %d couches.' % (index+1,target))
+            continue  # Un via traversant reste valide en deux couches.
         if any(obj.IsOnLayer(board.GetLayerID(name)) for name in removed):
             raise ValueError('Design %d : cuivre présent sur %s. Impossible de réduire à %d couches.' %
                              (index+1,', '.join(removed),target))
@@ -257,12 +259,12 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
             board=pcbnew.LoadBoard(str(source))
             contours=connected_contours(board)
             if not wizard.verify_detection(contours,board,mode):return
-            with wizard.LayerDialog(contours,board.GetCopperLayerCount()) as dialog:
+            with wizard.LayerDialog(contours,board) as dialog:
                 if dialog.ShowModal()!=wx.ID_OK:return
                 layer_settings=dialog.values()
             for i,(layers,_) in enumerate(layer_settings):
                 validate_design_layers(board,i,contours,layers)
-            with wizard.NameDialog(contours) as dialog:
+            with wizard.NameDialog(contours,board) as dialog:
                 if dialog.ShowModal()!=wx.ID_OK:return
                 names=dialog.values()
             if len(set(slug(name).lower() for name in names))!=len(names):
