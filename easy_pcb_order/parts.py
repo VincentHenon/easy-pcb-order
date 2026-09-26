@@ -15,35 +15,24 @@ import wx
 PART = re.compile(r'^C[1-9][0-9]*$', re.I)
 
 def part_key(fp):
-    """Conservative grouping: same symbol family, value, footprint and assembly type."""
+    """Group equivalent designators by family, displayed value and footprint."""
     ref=fp.GetReference()
     family=re.match(r'[A-Za-z]+',ref)
     family=family.group(0).upper() if family else ref.upper()
-    value=' '.join(fp.GetValue().casefold().split())
+    value=re.sub(r'\s+','',fp.GetValue().casefold()).replace('ω','ohm').replace('Ω','ohm')
     footprint=str(fp.GetFPID().GetLibItemName()).casefold()
     try:
         import pcbnew
         assembly='SMD' if fp.GetAttributes() & pcbnew.FP_SMD else 'THT'
     except (ImportError,AttributeError):
         assembly='unknown'
-    details=[]
-    if hasattr(fp,'GetFields'):
-        for field in fp.GetFields():
-            name=field.GetName().strip().casefold()
-            if name in ('mpn','manufacturer','color','colour','tolerance','voltage','dielectric','power','wattage','current','intensity','polarity'):
-                details.append((name,field.GetText().strip().casefold()))
-    return family,value,footprint,assembly,tuple(sorted(details))
+    return family,value,footprint,assembly
 
 def group_footprints(footprints, assignments):
-    """Keep conflicting known part numbers separate; never guess LED color or ratings."""
+    """Existing per-reference assignments do not prevent grouping."""
     groups={}
     for fp in footprints:
         key=part_key(fp)
-        existing=assignments.get(fp.GetReference())
-        if existing is not None:
-            key+=(existing,)
-        else:
-            key+=(None,)
         groups.setdefault(key,[]).append(fp)
     return list(groups.values())
 
@@ -160,9 +149,10 @@ class PartsDialog(wx.Dialog):
         group=self.groups[self.index];fp=group[0];ref=fp.GetReference()
         refs=', '.join(item.GetReference() for item in group)
         self.heading.SetLabel('Groupe %d / %d — %d composant(s)  •  %s  •  %s' % (self.index+1,len(self.groups),len(group),fp.GetValue(),fp.GetFPID().GetLibItemName()))
-        self.visual.SetLabel('Empreintes concernées : '+refs+'\nType : '+part_key(fp)[0]+'  •  Ces empreintes recevront le même numéro.\nContrôle visuel : le premier composant du groupe est centré dans le PCB Editor si KiCad le permet.')
-        self.part.SetValue(self.mapping.get(ref,''))
-        self.omit.SetValue(ref in self.mapping and not self.mapping[ref])
+        values={self.mapping[item.GetReference()] for item in group if item.GetReference() in self.mapping}
+        self.visual.SetLabel('Empreintes concernées : '+refs+'\nUne seule référence sera appliquée à tout ce groupe. Exceptions modifiables à l’étape suivante.\nContrôle visuel : le premier composant est centré dans le PCB Editor si KiCad le permet.'+('\nAttention : ce groupe avait plusieurs attributions différentes ; vérifie-les dans la liste finale.' if len(values)>1 else ''))
+        self.part.SetValue(next(iter(values)) if len(values)==1 else '')
+        self.omit.SetValue(values=={''})
         self.previous.Enable(self.index>0)
         self.next.SetLabel('Vérifier la liste' if self.index==len(self.groups)-1 else 'Suivant')
         self.Layout()
