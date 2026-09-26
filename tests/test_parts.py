@@ -17,9 +17,12 @@ class GroupTests(unittest.TestCase):
     def test_groups_even_when_existing_assignments_differ(self):
         wx=types.ModuleType('wx');wx.Dialog=type('Dialog',(),{})
         pcb=types.ModuleType('pcbnew');pcb.FP_SMD=1
-        spec=importlib.util.spec_from_file_location('parts_test',Path(__file__).resolve().parents[1]/'easy_pcb_order'/'parts.py')
+        preview=types.ModuleType('easy_pcb_order.preview')
+        package=types.ModuleType('easy_pcb_order')
+        package.__path__=[str(Path(__file__).resolve().parents[1]/'easy_pcb_order')]
+        spec=importlib.util.spec_from_file_location('easy_pcb_order.parts',Path(__file__).resolve().parents[1]/'easy_pcb_order'/'parts.py')
         module=importlib.util.module_from_spec(spec)
-        with patch.dict(sys.modules,{'wx':wx,'pcbnew':pcb}):
+        with patch.dict(sys.modules,{'wx':wx,'pcbnew':pcb,'easy_pcb_order':package,'easy_pcb_order.preview':preview}):
             spec.loader.exec_module(module)
             fps=[Footprint('R1','10 kΩ','R_0603'),Footprint('R2','10kΩ','R_0603'),
                  Footprint('R3','1k','R_0603'),Footprint('C1','10kΩ','R_0603')]
