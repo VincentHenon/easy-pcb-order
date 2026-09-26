@@ -9,6 +9,55 @@ CARD=wx.Colour(34,43,59)
 INK=wx.Colour(239,244,252)
 MUTED=wx.Colour(165,181,202)
 ACCENT=wx.Colour(102,195,226)
+FIELD=wx.Colour(44,55,73)
+
+class ActionButton(wx.Control):
+    """Drawn control with keyboard access and visible hover/focus states."""
+    def __init__(self,parent,label,callback,variant='secondary',width=150):
+        super().__init__(parent,size=(width,40),style=wx.BORDER_NONE|wx.WANTS_CHARS)
+        self.label,self.callback,self.variant=label,callback,variant
+        self.SetName(label)
+        self.hover=False
+        self.SetMinSize((width,40));self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_PAINT,self.paint)
+        self.Bind(wx.EVT_LEFT_UP,self.activate)
+        self.Bind(wx.EVT_ENTER_WINDOW,self.enter)
+        self.Bind(wx.EVT_LEAVE_WINDOW,self.leave)
+        self.Bind(wx.EVT_KEY_DOWN,self.key)
+        self.Bind(wx.EVT_SET_FOCUS,lambda event:self.Refresh())
+        self.Bind(wx.EVT_KILL_FOCUS,lambda event:self.Refresh())
+    def enter(self,event):self.hover=True;self.Refresh()
+    def leave(self,event):self.hover=False;self.Refresh()
+    def key(self,event):
+        if event.GetKeyCode() in (wx.WXK_RETURN,wx.WXK_NUMPAD_ENTER,wx.WXK_SPACE):self.activate(event)
+        else:event.Skip()
+    def activate(self,event):
+        if not self.IsEnabled():return
+        self.SetFocus()
+        self.callback(event)
+    def paint(self,event):
+        dc=wx.AutoBufferedPaintDC(self);dc.SetBackground(wx.Brush(BG));dc.Clear()
+        w,h=self.GetClientSize()
+        fill=ACCENT if self.variant=='primary' else FIELD
+        if self.hover:fill=wx.Colour(130,216,241) if self.variant=='primary' else wx.Colour(60,75,95)
+        dc.SetPen(wx.Pen(ACCENT if self.HasFocus() else fill,2 if self.HasFocus() else 1))
+        dc.SetBrush(wx.Brush(fill));dc.DrawRoundedRectangle(2,2,w-4,h-4,9)
+        dc.SetTextForeground(BG if self.variant=='primary' else INK)
+        tw,th=dc.GetTextExtent(self.label)
+        dc.DrawText(self.label,(w-tw)//2,(h-th)//2)
+
+class ProgressTrack(wx.Panel):
+    def __init__(self,parent):
+        super().__init__(parent,size=(-1,5))
+        self.step=0;self.total=1
+        self.SetMinSize((-1,5));self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_PAINT,self.paint)
+    def update(self,step,total):self.step=step;self.total=max(total,1);self.Refresh()
+    def paint(self,event):
+        dc=wx.AutoBufferedPaintDC(self);dc.SetBackground(wx.Brush(BG));dc.Clear()
+        w,h=self.GetClientSize()
+        dc.SetPen(wx.TRANSPARENT_PEN);dc.SetBrush(wx.Brush(FIELD));dc.DrawRoundedRectangle(0,0,w,h,2)
+        dc.SetBrush(wx.Brush(ACCENT));dc.DrawRoundedRectangle(0,0,max(4,int(w*self.step/self.total)),h,2)
 
 class FootprintPreview(wx.Panel):
     def __init__(self,parent):
@@ -106,7 +155,7 @@ class ModelPreview(wx.Panel):
     def __init__(self,parent):
         super().__init__(parent,size=(400,255))
         self.bitmap=None
-        self.message='Clique sur « Aperçu 3D » pour charger le modèle KiCad.'
+        self.message='Le modèle 3D se charge automatiquement quand il est disponible.'
         self.SetMinSize((400,255));self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.Bind(wx.EVT_PAINT,self.paint)
     def set_image(self,path):
