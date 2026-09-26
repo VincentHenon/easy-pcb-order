@@ -112,6 +112,9 @@ class PartsDialog(wx.Dialog):
         self.preview_dir=tempfile.TemporaryDirectory(prefix='easy-pcb-order-preview-')
         self.render_token=0
         self.cached_models={}
+        self.rendering=False
+        self.pending_model=None
+        self.closed=False
         self.SetBackgroundColour(preview.BG)
         root=wx.BoxSizer(wx.VERTICAL)
         self.heading=wx.StaticText(self,label='')
@@ -125,9 +128,6 @@ class PartsDialog(wx.Dialog):
         gallery.Add(self.footprint_preview,1,wx.EXPAND|wx.RIGHT,12)
         gallery.Add(self.model_preview,1,wx.EXPAND)
         root.Add(gallery,0,wx.EXPAND|wx.LEFT|wx.RIGHT,18)
-        self.model_button=wx.Button(self,label='Afficher le modèle 3D')
-        self.model_button.Bind(wx.EVT_BUTTON,self.show_model)
-        root.Add(self.model_button,0,wx.ALL,18)
         self.visual=wx.StaticText(self,label='')
         self.visual.SetForegroundColour(preview.MUTED)
         root.Add(self.visual,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,18)
@@ -172,12 +172,13 @@ class PartsDialog(wx.Dialog):
         self.render_token+=1
         self.footprint_preview.set_footprint(fp)
         names=preview.model_names(fp)
-        self.model_button.Enable(bool(names))
         cached=self.cached_models.get(ref)
         if cached:
             try:self.model_preview.set_image(cached)
             except Exception:self.model_preview.set_message('Image 3D indisponible.')
-        elif names:self.model_preview.set_message('Clique sur « Afficher le modèle 3D ».')
+        elif names:
+            self.model_preview.set_message('Chargement automatique du modèle 3D…')
+            wx.CallAfter(self.show_model)
         else:self.model_preview.set_message('Aucun modèle 3D associé à cette empreinte.')
         refs=', '.join(item.GetReference() for item in group)
         self.heading.SetLabel('Groupe %d / %d — %d composant(s)  •  %s  •  %s' % (self.index+1,len(self.groups),len(group),fp.GetValue(),fp.GetFPID().GetLibItemName()))
@@ -220,12 +221,21 @@ class PartsDialog(wx.Dialog):
         self.index-=1;self.show_current()
     def on_close(self,event):
         self.clear_highlight()
+        self.stop_preview()
         event.Skip()
-    def show_model(self,event):
+    def stop_preview(self):
+        self.closed=True
+        self.pending_model=None
+        if not self.rendering:self.preview_dir.cleanup()
+    def show_model(self):
+        if self.closed:return
         fp=self.groups[self.index][0];reference=fp.GetReference()
         cached=self.cached_models.get(reference)
         if cached:
             self.model_preview.set_image(cached)
+            return
+        if self.rendering:
+            self.pending_model=reference
             return
         cli=preview.find_cli()
         if not cli:
@@ -238,23 +248,28 @@ class PartsDialog(wx.Dialog):
         except Exception as exc:
             self.model_preview.set_message('3D indisponible : '+str(exc)[:45])
             return
-        token=self.render_token
-        self.model_button.Enable(False)
+        self.rendering=True
         self.model_preview.set_message('Rendu 3D en cours…')
         def work():
             try:result=(preview.render_prepared(pcb,cli),None)
             except Exception as exc:result=(None,str(exc))
             wx.CallAfter(done,result)
         def done(result):
-            if not self or self.IsBeingDeleted():return
+            self.rendering=False
+            if self.closed:
+                self.preview_dir.cleanup()
+                return
             image,error=result
             if image:self.cached_models[reference]=image
-            if self.render_token!=token:return
-            self.model_button.Enable(True)
-            if error:self.model_preview.set_message('3D indisponible : '+error[:45])
-            else:
-                try:self.model_preview.set_image(image)
-                except Exception:self.model_preview.set_message('Impossible de lire le rendu 3D.')
+            current=self.groups[self.index][0].GetReference()
+            if current==reference:
+                if error:self.model_preview.set_message('3D indisponible : '+error[:45])
+                else:
+                    try:self.model_preview.set_image(image)
+                    except Exception:self.model_preview.set_message('Impossible de lire le rendu 3D.')
+            queued=self.pending_model
+            self.pending_model=None
+            if queued and queued==current and queued!=reference:self.show_model()
         threading.Thread(target=work,daemon=True).start()
     def open_site(self,event):
         fp=self.groups[self.index][0]
