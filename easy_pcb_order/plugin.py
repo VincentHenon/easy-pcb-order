@@ -166,7 +166,11 @@ def run_cli(args):
 def output_one(source, target, contours, index, entry, preset, cli, assignments, placements=None):
     target.mkdir(parents=True)
     temp = target / (slug(entry['name']) + '.kicad_pcb')
-    board = pcbnew.LoadBoard(str(source))
+    # pcbnew.LoadBoard() may return KiCad's live board when given the exact
+    # path already open in the editor.  Always copy first: every removal below
+    # must happen on a distinct file and never on the user's editor board.
+    shutil.copy2(source,temp)
+    board = pcbnew.LoadBoard(str(temp))
     kept_edges = {str(edge.m_Uuid) for edge in contours[index]['edges']}
     # Evaluate ownership before mutation; the original board remains untouched.
     removals = []
