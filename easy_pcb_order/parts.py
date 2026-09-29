@@ -14,7 +14,7 @@ import urllib.request
 import webbrowser
 import wx
 from . import preview
-from .bom_import import parse_kicad_xml
+from .bom_import import parse_bom,parse_cpl
 
 PART = re.compile(r'^C[1-9][0-9]*$', re.I)
 
@@ -122,16 +122,20 @@ class ImportDialog(wx.Dialog):
         self.SetBackgroundColour(preview.BG)
         self.footprints=footprints
         self.imported={}
+        self.cpl={}
         root=wx.BoxSizer(wx.VERTICAL)
         title=wx.StaticText(self,label='Importer des références existantes')
         title.SetForegroundColour(preview.INK)
         font=title.GetFont();font.SetPointSize(font.GetPointSize()+5);font.SetWeight(wx.FONTWEIGHT_BOLD)
         title.SetFont(font)
         root.Add(title,0,wx.ALL,24)
-        description=wx.StaticText(self,label='BOM XML exportée depuis KiCad : les champs LCSC ou JLCPCB sont associés aux références du PCB.\nUn fichier partiel convient. Les autres groupes seront proposés à l’étape suivante.')
+        description=wx.StaticText(self,label='Importe une BOM et, si tu en as une, un fichier CPL. Formats : XLSX, CSV, TSV, ODS et XML KiCad.\nLes en-têtes JLCPCB sont reconnus, y compris « Designator » et « JLCPCB Part #（optional） ».')
         description.SetForegroundColour(preview.MUTED)
         root.Add(description,0,wx.LEFT|wx.RIGHT|wx.BOTTOM,24)
-        root.Add(preview.ActionButton(self,'Choisir un fichier XML',self.choose,width=230),0,wx.LEFT|wx.RIGHT,24)
+        actions=wx.BoxSizer(wx.HORIZONTAL)
+        actions.Add(preview.ActionButton(self,'Importer une BOM',self.choose_bom,width=200),0,wx.RIGHT,12)
+        actions.Add(preview.ActionButton(self,'Importer un CPL',self.choose_cpl,width=200))
+        root.Add(actions,0,wx.LEFT|wx.RIGHT,24)
         self.summary=wx.StaticText(self,label='Aucun fichier sélectionné. Tu peux continuer et attribuer les références manuellement.')
         self.summary.SetForegroundColour(preview.ACCENT)
         root.Add(self.summary,0,wx.ALL,24)
@@ -141,20 +145,34 @@ class ImportDialog(wx.Dialog):
         footer.Add(preview.ActionButton(self,'Continuer  →',lambda event:self.EndModal(wx.ID_OK),'primary',width=180))
         root.Add(footer,0,wx.ALIGN_RIGHT|wx.ALL,24)
         self.SetSizer(root)
-    def choose(self,event):
-        with wx.FileDialog(self,'Choisir une BOM XML KiCad',wildcard='BOM XML (*.xml)|*.xml',style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST) as dlg:
+    def choose_bom(self,event):
+        wildcard='BOM / tableur (*.xlsx;*.csv;*.tsv;*.ods;*.xml;*.numbers)|*.xlsx;*.csv;*.tsv;*.ods;*.xml;*.numbers|Tous les fichiers|*.*'
+        with wx.FileDialog(self,'Choisir une BOM',wildcard=wildcard,style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST) as dlg:
             if dlg.ShowModal()!=wx.ID_OK:return
             path=dlg.GetPath()
         try:
-            imported,ignored,invalid=parse_kicad_xml(path,self.footprints)
+            imported,ignored,invalid=parse_bom(path,self.footprints)
         except (OSError,ValueError) as exc:
             wx.MessageBox(str(exc),'Import BOM',wx.OK|wx.ICON_WARNING)
             return
         self.imported=imported
-        self.summary.SetLabel('%s\n%d référence(s) LCSC trouvée(s) sur ce PCB · %d ligne(s) ignorée(s) · %d numéro(s) invalide(s).' % (
+        self.summary.SetLabel('BOM : %s\n%d référence(s) trouvée(s) · %d ligne(s) ignorée(s) · %d numéro(s) invalide(s).' % (
             Path(path).name,len(imported),ignored,invalid))
         self.summary.Wrap(620)
         self.Layout()
+    def choose_cpl(self,event):
+        wildcard='CPL / tableur (*.xlsx;*.csv;*.tsv;*.ods;*.xml;*.numbers)|*.xlsx;*.csv;*.tsv;*.ods;*.xml;*.numbers|Tous les fichiers|*.*'
+        with wx.FileDialog(self,'Choisir un fichier CPL',wildcard=wildcard,style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal()!=wx.ID_OK:return
+            path=dlg.GetPath()
+        try:
+            cpl,ignored,invalid=parse_cpl(path,self.footprints)
+        except (OSError,ValueError) as exc:
+            wx.MessageBox(str(exc),'Import CPL',wx.OK|wx.ICON_WARNING)
+            return
+        self.cpl=cpl
+        self.summary.SetLabel(self.summary.GetLabel()+'\nCPL : %s\n%d position(s) reprise(s) · %d ligne(s) ignorée(s) · %d ligne(s) invalide(s).' % (Path(path).name,len(cpl),ignored,invalid))
+        self.summary.Wrap(620);self.Layout()
 
 class PartsDialog(wx.Dialog):
     """One conservative group at a time, with canvas and dialog feedback."""
