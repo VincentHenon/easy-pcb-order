@@ -156,7 +156,11 @@ def find_cli():
 def prepare_single(source,reference,directory):
     """Create a disposable board with only this footprint on KiCad's UI thread."""
     import pcbnew
-    board=pcbnew.LoadBoard(str(source))
+    pcb=Path(directory)/(reference+'.kicad_pcb')
+    # Never load and mutate the path open in PCB Editor: KiCad can hand back
+    # its live board object for that path.  Work from a copied file instead.
+    shutil.copy2(source,pcb)
+    board=pcbnew.LoadBoard(str(pcb))
     matches=[fp for fp in board.GetFootprints() if fp.GetReference()==reference]
     if len(matches)!=1:raise ValueError('Empreinte introuvable ou non unique : '+reference)
     fp=matches[0]
@@ -172,7 +176,6 @@ def prepare_single(source,reference,directory):
     shape.SetEnd(pcbnew.VECTOR2I(b.GetRight()+margin,b.GetBottom()+margin))
     shape.SetLayer(pcbnew.Edge_Cuts)
     board.Add(shape)
-    pcb=Path(directory)/(reference+'.kicad_pcb')
     if not pcbnew.SaveBoard(str(pcb),board):raise RuntimeError('Impossible de préparer le modèle 3D.')
     return pcb
 
