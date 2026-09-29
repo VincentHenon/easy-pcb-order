@@ -15,6 +15,7 @@ import wx
 import pcbnew
 from .parts import PART, PartsDialog, ImportDialog, ReviewDialog, apply_imported_groups, part_key, read_assignments, write_assignments, read_stock_notes, write_stock_notes
 from . import geometry, wizard
+from .preview import find_cli
 
 EDGE = pcbnew.Edge_Cuts
 PRESETS = {
@@ -233,14 +234,6 @@ def validate_design_layers(board,index,contours,target):
             raise ValueError('Design %d : cuivre présent sur %s. Impossible de réduire à %d couches.' %
                              (index+1,', '.join(removed),target))
 
-def find_cli():
-    found=shutil.which('kicad-cli')
-    if found:return found
-    for location in ('/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli',
-                     '/Applications/KiCad/kicad-cli'):
-        if Path(location).is_file():return location
-    raise ValueError('kicad-cli introuvable. Ajoute le dossier bin de KiCad au PATH.')
-
 class MultiPCBExporter(pcbnew.ActionPlugin):
     def defaults(self):
         self.name='easy-pcb-order'
@@ -304,6 +297,7 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
             preset=wizard.factory_choice()
             if preset is None:return
             cli=find_cli()
+            if not cli:raise ValueError('kicad-cli introuvable. Vérifie que KiCad est installé dans Applications puis relance le PCB Editor.')
             base=source.parent / (source.stem+'-fabrication')
             if base.exists():
                 raise ValueError('Le dossier de sortie existe déjà : %s. Déplace-le ou renomme-le avant un nouvel export.' % base)
