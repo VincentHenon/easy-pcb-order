@@ -170,13 +170,28 @@ def output_one(source, target, contours, index, entry, preset, cli, assignments,
     kept_edges = {str(edge.m_Uuid) for edge in contours[index]['edges']}
     # Evaluate ownership before mutation; the original board remains untouched.
     removals = []
-    for collection in (board.GetFootprints(), board.GetTracks(), board.Zones(), board.GetDrawings()):
+    # Drawings outside an outline are commonly dimensions, notes, or a panel
+    # legend.  They are not manufacturable board content, so omit them from a
+    # split board instead of refusing the whole export.  Copper remains strict:
+    # an out-of-board track or zone is almost certainly a real design error.
+    for kind,collection in (('footprint',board.GetFootprints()),
+                            ('copper',board.GetTracks()),
+                            ('copper',board.Zones()),
+                            ('drawing',board.GetDrawings())):
         for obj in list(collection):
             if obj.GetLayer() == EDGE and str(obj.m_Uuid) in kept_edges:
                 continue
             if obj.GetLayer() == EDGE:
                 removals.append(obj)
-            elif item_owner(obj, contours) != index:
+                continue
+            try:
+                object_index=item_owner(obj,contours)
+            except ValueError:
+                if kind in ('footprint','drawing'):
+                    removals.append(obj)
+                    continue
+                raise
+            if object_index != index:
                 removals.append(obj)
     for obj in removals:
         board.Remove(obj)
@@ -268,8 +283,19 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                      for name,(layers,panel) in zip(names,layer_settings)]
             assignments=read_assignments(source)
             imported_cpl={}
-            eligible=[fp for fp in current.GetFootprints() if not exclude(fp)
-                      and not entries[owner(bb_center(fp),contours)]['panel']]
+            eligible=[]
+            for fp in current.GetFootprints():
+                if exclude(fp):
+                    continue
+                try:
+                    design_index=owner(bb_center(fp),contours)
+                except ValueError:
+                    # Library footprints, notes and panel tooling may be kept
+                    # outside every closed design.  They cannot belong to an
+                    # assembly export, so leave them out of the assignment UI.
+                    continue
+                if not entries[design_index]['panel']:
+                    eligible.append(fp)
             eligible.sort(key=lambda fp:fp.GetReference())
             for fp in eligible:
                 if PART.fullmatch(part_number(fp)):
