@@ -111,7 +111,7 @@ def part_number(fp):
 def exclude(fp):
     return (hasattr(fp, 'GetExcludedFromBOM') and fp.GetExcludedFromBOM()) or (hasattr(fp, 'GetDNP') and fp.GetDNP())
 
-def export_assembly(board, path, preset, assignments):
+def export_assembly(board, path, preset, assignments, placements=None):
     bom = []
     pos = []
     for fp in board.GetFootprints():
@@ -124,10 +124,12 @@ def export_assembly(board, path, preset, assignments):
         if number:
             bom.append((ref, footprint, value, number))
         if fp.GetAttributes() & pcbnew.FP_SMD and number:
-            p = fp.GetPosition()
-            pos.append((ref, '%.4f' % pcbnew.ToMM(p.x), '%.4f' % pcbnew.ToMM(p.y),
-                        '%.2f' % (fp.GetOrientationDegrees() % 360),
-                        'Bottom' if fp.IsFlipped() else 'Top'))
+            override=(placements or {}).get(ref)
+            if override:x,y,rotation,layer=override
+            else:
+                p=fp.GetPosition();x,y=pcbnew.ToMM(p.x),pcbnew.ToMM(p.y)
+                rotation=fp.GetOrientationDegrees()%360;layer='Bottom' if fp.IsFlipped() else 'Top'
+            pos.append((ref, '%.4f' % x, '%.4f' % y,'%.2f' % rotation,layer))
     if preset == 'JLCPCB':
         header=['Designator','Footprint','Quantity','Value','LCSC Part #']
         rows=[[r,foot,'1',value,num] for r,foot,value,num in bom]
@@ -160,7 +162,7 @@ def run_cli(args):
     if result.returncode:
         raise RuntimeError('%s\n%s' % (' '.join(args), (result.stderr or result.stdout).strip()))
 
-def output_one(source, target, contours, index, entry, preset, cli, assignments):
+def output_one(source, target, contours, index, entry, preset, cli, assignments, placements=None):
     target.mkdir(parents=True)
     temp = target / (slug(entry['name']) + '.kicad_pcb')
     board = pcbnew.LoadBoard(str(source))
@@ -203,7 +205,7 @@ def output_one(source, target, contours, index, entry, preset, cli, assignments)
     shutil.rmtree(gerbers)
     counts = (0,0)
     if PRESETS[preset]['bom'] and not entry['panel']:
-        counts = export_assembly(board,target,preset,assignments)
+        counts = export_assembly(board,target,preset,assignments,placements)
     (target/'manifest.json').write_text(json.dumps({'name':entry['name'],'front_panel':entry['panel'],
          'layers':active,'preset':preset,'bom_parts_with_number':counts[0],
          'placed_smd_with_number':counts[1], 'source':str(source)},indent=2),encoding='utf-8')
@@ -272,6 +274,7 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
             entries=[{'name':name,'layers':layers,'panel':panel}
                      for name,(layers,panel) in zip(names,layer_settings)]
             assignments=read_assignments(source)
+            imported_cpl={}
             eligible=[fp for fp in current.GetFootprints() if not exclude(fp)
                       and not entries[owner(bb_center(fp),contours)]['panel']]
             eligible.sort(key=lambda fp:fp.GetReference())
@@ -282,6 +285,7 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                 with ImportDialog(None,eligible) as import_dialog:
                     if import_dialog.ShowModal()!=wx.ID_OK:return
                     imported=import_dialog.imported
+                    imported_cpl=import_dialog.cpl
                 assignments,imported_keys=apply_imported_groups(eligible,assignments,imported)
                 to_assign=[fp for fp in eligible if part_key(fp) not in imported_keys]
                 if to_assign:
@@ -307,7 +311,7 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
             with tempfile.TemporaryDirectory(prefix='easy-pcb-order-') as tmp:
                 stage=Path(tmp)/base.name
                 for i,entry in enumerate(entries):
-                    output_one(source,stage/slug(entry['name']),contours,i,entry,preset,cli,assignments)
+                    output_one(source,stage/slug(entry['name']),contours,i,entry,preset,cli,assignments,imported_cpl)
                 shutil.move(str(stage),str(base))
             if PRESETS[preset]['bom']:
                 write_assignments(source,assignments)
