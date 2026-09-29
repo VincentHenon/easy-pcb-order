@@ -165,3 +165,28 @@ def factory_choice():
                                'Étape 6 / 6 — usine',FACTORIES) as dlg:
         if dlg.ShowModal()!=wx.ID_OK:return None
         return FACTORIES[dlg.GetSelection()]
+
+class ReferenceSilkscreenDialog(wx.Dialog):
+    def __init__(self,entries):
+        super().__init__(None,title='Dernier réglage — références sur sérigraphie',size=(650,360))
+        root=wx.BoxSizer(wx.VERTICAL)
+        root.Add(wx.StaticText(self,label='Choisis, pour chaque fichier de fabrication, si les références R1, C4, U3… déjà placées sur F.SilkS ou B.SilkS doivent apparaître.'),0,wx.ALL,16)
+        root.Add(wx.StaticText(self,label='« Afficher » conserve la sérigraphie du PCB source. « Masquer » cache uniquement ces références dans la copie exportée.'),0,wx.LEFT|wx.RIGHT|wx.BOTTOM,16)
+        self.choices=[]
+        grid=wx.FlexGridSizer(0,2,10,16)
+        grid.AddGrowableCol(1,1)
+        for entry in entries:
+            grid.Add(wx.StaticText(self,label=entry['name']),0,wx.ALIGN_CENTER_VERTICAL)
+            choice=wx.Choice(self,choices=['Afficher','Masquer'])
+            choice.SetSelection(0)
+            grid.Add(choice,1,wx.EXPAND)
+            self.choices.append(choice)
+        root.Add(grid,1,wx.EXPAND|wx.LEFT|wx.RIGHT,18)
+        root.Add(self.CreateButtonSizer(wx.OK|wx.CANCEL),0,wx.EXPAND|wx.ALL,16)
+        self.SetSizer(root)
+    def values(self):return [choice.GetSelection()==0 for choice in self.choices]
+
+def reference_silkscreen_choice(entries):
+    with ReferenceSilkscreenDialog(entries) as dlg:
+        if dlg.ShowModal()!=wx.ID_OK:return None
+        return dlg.values()
