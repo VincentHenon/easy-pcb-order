@@ -38,10 +38,13 @@ def load_plugin():
     parts.read_stock_notes=lambda x:{}
     parts.write_stock_notes=lambda x,y:None
     wizard=types.ModuleType('easy_pcb_order.wizard')
+    preview=types.ModuleType('easy_pcb_order.preview')
+    preview.find_cli=lambda:'/mock/kicad-cli'
     spec=importlib.util.spec_from_file_location('easy_pcb_order.plugin',ROOT/'plugin.py')
     module=importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules,{'easy_pcb_order':package,'pcbnew':pcb,'wx':wx,
-                                 'easy_pcb_order.parts':parts,'easy_pcb_order.wizard':wizard}):
+                                 'easy_pcb_order.parts':parts,'easy_pcb_order.wizard':wizard,
+                                 'easy_pcb_order.preview':preview}):
         spec.loader.exec_module(module)
     return module
 
