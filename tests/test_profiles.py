@@ -103,13 +103,23 @@ class ProfileTests(unittest.TestCase):
             with self.subTest(factory=factory),tempfile.TemporaryDirectory() as directory:
                 count=plugin.export_assembly(board,Path(directory),factory,{'R1':'C100','R2':'C200'})
                 self.assertEqual(count,(2,1))
-                with open(Path(directory)/'bom.csv',encoding='utf-8-sig',newline='') as file:
+                bom_name='BOM.csv' if factory=='JLCPCB' else 'bom.csv'
+                cpl_name='CPL.csv' if factory=='JLCPCB' else 'positions.csv'
+                with open(Path(directory)/bom_name,encoding='utf-8-sig',newline='') as file:
                     rows=list(csv.reader(file))
                 self.assertIn(expected,rows[0])
                 self.assertEqual(len(rows),3)
-                with open(Path(directory)/'positions.csv',encoding='utf-8-sig',newline='') as file:
+                with open(Path(directory)/cpl_name,encoding='utf-8-sig',newline='') as file:
                     rows=list(csv.reader(file))
                 self.assertEqual(len(rows),2)
                 self.assertEqual(rows[1][0],'R1')
+                if factory=='JLCPCB':self.assertEqual(rows[0],['Designator','Mid X','Mid Y','Layer','Rotation'])
+    def test_jlc_bom_groups_designators_for_one_part(self):
+        plugin=load_plugin()
+        board=types.SimpleNamespace(GetFootprints=lambda:[FakeFootprint('R1',True),FakeFootprint('R2',True)])
+        with tempfile.TemporaryDirectory() as directory:
+            plugin.export_assembly(board,Path(directory),'JLCPCB',{'R1':'C25804','R2':'C25804'})
+            with open(Path(directory)/'BOM.csv',encoding='utf-8-sig',newline='') as file:rows=list(csv.reader(file))
+        self.assertEqual(rows,[['Comment','Designator','Footprint','LCSC Part #'],['10k','R1,R2','R_0603','C25804']])
 
 if __name__=='__main__':unittest.main()
