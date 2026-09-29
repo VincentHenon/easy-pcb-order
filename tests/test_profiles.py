@@ -60,6 +60,14 @@ class FakeFootprint:
     def GetFields(self):return []
 
 class ProfileTests(unittest.TestCase):
+    def test_mutating_helpers_copy_the_open_board_before_loading(self):
+        plugin=load_plugin()
+        plugin_source=(ROOT/'plugin.py').read_text(encoding='utf-8')
+        preview_source=(ROOT/'preview.py').read_text(encoding='utf-8')
+        output=plugin_source[plugin_source.index('def output_one'):plugin_source.index('def validate_design_layers')]
+        prepare=preview_source[preview_source.index('def prepare_single'):preview_source.index('def render_prepared')]
+        self.assertLess(output.index('shutil.copy2(source,temp)'),output.index('pcbnew.LoadBoard(str(temp))'))
+        self.assertLess(prepare.index('shutil.copy2(source,pcb)'),prepare.index('pcbnew.LoadBoard(str(pcb))'))
     def test_two_layer_design_keeps_through_via(self):
         plugin=load_plugin()
         via=plugin.pcbnew.PCB_VIA()
