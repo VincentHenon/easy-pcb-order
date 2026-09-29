@@ -2,6 +2,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import wx
 
 BG=wx.Colour(23,29,42)
@@ -139,8 +140,17 @@ def model_names(fp):
 def find_cli():
     cli=shutil.which('kicad-cli')
     if cli:return cli
-    for path in ('/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli','/Applications/KiCad/kicad-cli'):
-        if Path(path).is_file():return path
+    candidates=[Path('/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli'),
+                Path('/Applications/kicad/KiCad.app/Contents/MacOS/kicad-cli'),
+                Path('/Applications/KiCad/kicad-cli')]
+    applications=Path('/Applications')
+    if applications.is_dir():
+        candidates.extend(applications.glob('*/KiCad.app/Contents/MacOS/kicad-cli'))
+        candidates.extend(applications.glob('*.app/Contents/MacOS/kicad-cli'))
+    executable=Path(sys.executable).resolve()
+    candidates.extend(parent/'kicad-cli' for parent in executable.parents)
+    for path in candidates:
+        if path.is_file():return str(path)
     return None
 
 def prepare_single(source,reference,directory):
