@@ -1,6 +1,6 @@
 # easy-pcb-order — prototype KiCad 9/10
 
-Plugin pour un projet comportant plusieurs cartes indépendantes dans **un seul fichier `.kicad_pcb`**. Il détecte les contours fermés `Edge.Cuts`, demande un nom, un nombre de couches et la qualification « front panel » pour chacun, puis propose JLCPCB, PCBWay et un export générique pour un autre fabricant. Chaque carte reçoit son propre `gerbers.zip` avec fichiers Gerber et perçages ; les cartes non marquées « front panel » reçoivent aussi `bom.csv` et `positions.csv` si le preset les demande. Il ne modifie jamais le PCB d'origine.
+Plugin pour un projet comportant plusieurs cartes indépendantes dans **un seul fichier `.kicad_pcb`**. Il détecte les contours fermés `Edge.Cuts`, demande un nom, un nombre de couches et la qualification « front panel » pour chacun, puis propose JLCPCB, PCBWay et un export générique pour un autre fabricant. Chaque carte reçoit son propre `gerbers.zip` avec fichiers Gerber et perçages ; les cartes non marquées « front panel » reçoivent aussi les fichiers d’assemblage. Le preset JLCPCB produit `BOM.csv` (groupée par valeur, empreinte et référence LCSC) et `CPL.csv` (Designator, Mid X, Mid Y, Layer, Rotation). Il ne modifie jamais le PCB d'origine.
 
 ## Installation
 
