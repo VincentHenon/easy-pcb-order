@@ -132,9 +132,18 @@ def export_assembly(board, path, preset, assignments, placements=None):
                 rotation=fp.GetOrientationDegrees()%360;layer='Bottom' if fp.IsFlipped() else 'Top'
             pos.append((ref, '%.4f' % x, '%.4f' % y,'%.2f' % rotation,layer))
     if preset == 'JLCPCB':
-        header=['Designator','Footprint','Quantity','Value','LCSC Part #']
-        rows=[[r,foot,'1',value,num] for r,foot,value,num in bom]
-        pos_header=['Designator','Mid X','Mid Y','Rotation','Layer']
+        # JLCPCB's BOM import identifies a line by its LCSC part number and
+        # derives quantity from the comma-separated designators.  Keep unlike
+        # values/packages on separate lines even if a wrong shared code was
+        # entered, so the user can spot it before ordering.
+        grouped={}
+        for ref,foot,value,num in bom:
+            grouped.setdefault((value,foot,num),[]).append(ref)
+        header=['Comment','Designator','Footprint','LCSC Part #']
+        rows=[[value,','.join(sorted(refs)),foot,num]
+              for (value,foot,num),refs in sorted(grouped.items())]
+        pos_header=['Designator','Mid X','Mid Y','Layer','Rotation']
+        bom_file=path/'BOM.csv';position_file=path/'CPL.csv'
     elif preset == 'PCBWay':
         header=['Line#','Quantity Per Part Number','Reference Designator','Part Number',
                 'Part Description','Package','Type','Manufacturers Name',
@@ -148,13 +157,15 @@ def export_assembly(board, path, preset, assignments, placements=None):
                          'SMD' if fp.GetAttributes() & pcbnew.FP_SMD else 'THT',
                          f.get('manufacturer',''),f.get('mpn',''),num])
         pos_header=['RefDes','X (mm)','Y (mm)','Rotation','Side']
+        bom_file=path/'bom.csv';position_file=path/'positions.csv'
     else:
         header=['Reference','Quantity','Value','Footprint','Supplier Part Number']
         rows=[[r,1,value,foot,num] for r,foot,value,num in bom]
         pos_header=['RefDes','X (mm)','Y (mm)','Rotation','Side']
-    with (path/'bom.csv').open('w',newline='',encoding='utf-8-sig') as f:
+        bom_file=path/'bom.csv';position_file=path/'positions.csv'
+    with bom_file.open('w',newline='',encoding='utf-8-sig') as f:
         w=csv.writer(f); w.writerow(header); w.writerows(rows)
-    with (path/'positions.csv').open('w',newline='',encoding='utf-8-sig') as f:
+    with position_file.open('w',newline='',encoding='utf-8-sig') as f:
         w=csv.writer(f); w.writerow(pos_header); w.writerows(pos)
     return len(bom), len(pos)
 
