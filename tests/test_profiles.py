@@ -19,6 +19,8 @@ def load_plugin():
     pcb.ToMM=lambda x:x
     pcb.ActionPlugin=type('ActionPlugin',(),{})
     pcb.FP_SMD=1
+    pcb.F_SilkS=37
+    pcb.B_SilkS=36
     pcb.VIATYPE_THROUGH=1
     pcb.PCB_TRACK=type('PCB_TRACK',(),{})
     pcb.PCB_VIA=type('PCB_VIA',(pcb.PCB_TRACK,),{})
@@ -60,6 +62,17 @@ class FakeFootprint:
     def GetFields(self):return []
 
 class ProfileTests(unittest.TestCase):
+    def test_can_hide_only_silkscreen_reference_text(self):
+        plugin=load_plugin()
+        visible=types.SimpleNamespace(GetLayer=lambda:plugin.pcbnew.F_SilkS,SetVisible=lambda value:setattr(visible,'shown',value))
+        fab=types.SimpleNamespace(GetLayer=lambda:99,SetVisible=lambda value:setattr(fab,'shown',value))
+        visible.shown=True;fab.shown=True
+        board=types.SimpleNamespace(GetFootprints=lambda:[types.SimpleNamespace(Reference=lambda:visible),types.SimpleNamespace(Reference=lambda:fab)])
+        plugin.set_silkscreen_references(board,False)
+        self.assertFalse(visible.shown)
+        self.assertTrue(fab.shown)
+        plugin.set_silkscreen_references(board,True)
+        self.assertTrue(fab.shown)
     def test_mutating_helpers_copy_the_open_board_before_loading(self):
         plugin=load_plugin()
         plugin_source=(ROOT/'plugin.py').read_text(encoding='utf-8')
