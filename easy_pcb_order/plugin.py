@@ -163,7 +163,17 @@ def run_cli(args):
     if result.returncode:
         raise RuntimeError('%s\n%s' % (' '.join(args), (result.stderr or result.stdout).strip()))
 
-def output_one(source, target, contours, index, entry, preset, cli, assignments, placements=None):
+def set_silkscreen_references(board,show):
+    """Alter only the temporary fabrication copy's component reference texts."""
+    if show:return
+    silkscreen={pcbnew.F_SilkS,pcbnew.B_SilkS}
+    for fp in board.GetFootprints():
+        try:
+            reference=fp.Reference()
+            if reference.GetLayer() in silkscreen:reference.SetVisible(False)
+        except (AttributeError,TypeError):pass
+
+def output_one(source, target, contours, index, entry, preset, cli, assignments, placements=None, show_references=True):
     target.mkdir(parents=True)
     temp = target / (slug(entry['name']) + '.kicad_pcb')
     # pcbnew.LoadBoard() may return KiCad's live board when given the exact
@@ -199,6 +209,7 @@ def output_one(source, target, contours, index, entry, preset, cli, assignments,
                 removals.append(obj)
     for obj in removals:
         board.Remove(obj)
+    set_silkscreen_references(board,show_references)
     active = int(entry['layers'])
     if active not in (2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32):
         raise ValueError('Nombre de couches invalide pour %s.' % entry['name'])
@@ -228,7 +239,8 @@ def output_one(source, target, contours, index, entry, preset, cli, assignments,
         counts = export_assembly(board,target,preset,assignments,placements)
     (target/'manifest.json').write_text(json.dumps({'name':entry['name'],'front_panel':entry['panel'],
          'layers':active,'preset':preset,'bom_parts_with_number':counts[0],
-         'placed_smd_with_number':counts[1], 'source':str(source)},indent=2),encoding='utf-8')
+         'placed_smd_with_number':counts[1], 'silkscreen_references':show_references,
+         'source':str(source)},indent=2),encoding='utf-8')
     temp.unlink()
 
 def validate_design_layers(board,index,contours,target):
@@ -326,6 +338,8 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
                     stock_notes=dialog.stock_notes
             preset=wizard.factory_choice()
             if preset is None:return
+            reference_visibility=wizard.reference_silkscreen_choice(entries)
+            if reference_visibility is None:return
             cli=find_cli()
             if not cli:raise ValueError('kicad-cli introuvable. Vérifie que KiCad est installé dans Applications puis relance le PCB Editor.')
             base=source.parent / (source.stem+'-fabrication')
@@ -335,7 +349,8 @@ class MultiPCBExporter(pcbnew.ActionPlugin):
             with tempfile.TemporaryDirectory(prefix='easy-pcb-order-') as tmp:
                 stage=Path(tmp)/base.name
                 for i,entry in enumerate(entries):
-                    output_one(source,stage/slug(entry['name']),contours,i,entry,preset,cli,assignments,imported_cpl)
+                    output_one(source,stage/slug(entry['name']),contours,i,entry,preset,cli,assignments,imported_cpl,
+                               show_references=reference_visibility[i])
                 shutil.move(str(stage),str(base))
             if PRESETS[preset]['bom']:
                 write_assignments(source,assignments)
